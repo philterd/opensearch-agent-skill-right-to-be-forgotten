@@ -1,0 +1,26 @@
+gdpr-forget-me
+Copyright 2026 Jeff Zemerick and the gdpr-forget-me contributors
+
+This product is licensed under the Apache License, Version 2.0 (see the LICENSE
+file). It was created as a community submission for the OpenSearch Agent Skills
+Hackathon (US 2026).
+
+--------------------------------------------------------------------------------
+Attribution
+
+Portions of this project are adapted from the OpenSearch Agent Skills project,
+specifically the OpenSearch client and local-cluster bootstrap conventions
+(scripts/lib/client.py, scripts/start_opensearch.sh) and the agent-skill
+packaging layout (SKILL.md, .claude-plugin/plugin.json):
+
+  OpenSearch Agent Skills
+  https://github.com/opensearch-project/opensearch-agent-skills
+  Copyright OpenSearch Contributors
+  Licensed under the Apache License, Version 2.0.
+
+--------------------------------------------------------------------------------
+Trademarks
+
+OpenSearch (https://opensearch.org/) is a trademark of its respective owner.
+This project is an independent community submission and is not endorsed by or
+affiliated with the OpenSearch project maintainers.

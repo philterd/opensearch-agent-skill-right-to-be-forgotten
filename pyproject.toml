@@ -1,0 +1,14 @@
+[project]
+name = "opensearch-agent-right-to-be-forgotten"
+version = "1.0.0"
+description = "OpenSearch Agent Skill for GDPR/CCPA right-to-be-forgotten erasure with indirect contextual identification"
+requires-python = ">=3.11"
+dependencies = [
+    "opensearch-py>=2.4",
+]
+
+[dependency-groups]
+dev = ["pytest>=8.0"]
+
+[tool.uv]
+constraint-dependencies = ["urllib3>=2.7.0", "idna>=3.15"]

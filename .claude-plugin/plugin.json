@@ -1,0 +1,15 @@
+{
+  "name": "opensearch-agent-right-to-be-forgotten",
+  "displayName": "GDPR Forget-Me for OpenSearch",
+  "description": "A privacy-engineering agent skill for OpenSearch that finds and erases personal data by INDIRECT contextual identification — locating documents that identify a person without their name or direct IDs ever appearing (e.g. 'the solo frontend engineer on duty during incident #4091'). Uses hybrid BM25 + neural/vector search to surface candidates, agent-driven contextual disambiguation to score them, and dry-run / redact-in-place / hard-delete actions with an append-only audit trail. Just ask your AI assistant to fulfil a GDPR erasure or right-to-be-forgotten request against your logs, traces, or documents.",
+  "author": {
+    "name": "jzonthemtn"
+  },
+  "license": "Apache-2.0",
+  "repository": "https://github.com/philterd/opensearch-agent-right-to-be-forgotten",
+  "homepage": "https://github.com/philterd/opensearch-agent-right-to-be-forgotten",
+  "keywords": ["gdpr", "ccpa", "privacy", "compliance", "pii", "right-to-be-forgotten", "redaction", "opensearch", "vector-search", "hybrid-search"],
+  "skills": [
+    "."
+  ]
+}
