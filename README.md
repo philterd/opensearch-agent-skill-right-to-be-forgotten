@@ -1,4 +1,4 @@
-# GDPR Forget-Me for OpenSearch
+# GDPR Forget-Me Agent Skill for OpenSearch
 
 An OpenSearch Agent Skill that fulfils GDPR "right to be forgotten" requests, including the data that keyword-based PII tools miss: people who are identifiable without their name ever appearing.
 
