@@ -182,6 +182,24 @@ Writes `forget-me.sh`: one curl command per flagged document, targeted by exact
 `(index, _id)` with the reason in a comment, followed by read-back verification
 commands. Also writes a hash-chained erasure certificate to `gdpr-audit/`.
 
+```bash
+# --- blair-l/customer___virginia_power_dominion/18  (confidence 1.0)  index=mail-enron ---
+# reason: Direct identifier match (email).
+curl -sS $CURL_OPTS -X POST "$OS/mail-enron/_update/blair-l%2Fcustomer___virginia_power_dominion%2F18?refresh=true" \
+  -H 'Content-Type: application/json' --data-binary @- <<'JSON'
+{ "script": { "lang": "painless", "source": "...", "params": {
+    "field": "message", "redaction": "[GDPR_REDACTED]",
+    "snippets": ["Lynn.Blair@enron.com"] } } }
+JSON
+
+# --- verification (read back the affected documents) ---
+curl -sS $CURL_OPTS "$OS/mail-enron/_doc/blair-l%2Fcustomer___virginia_power_dominion%2F18?_source=message"; echo
+```
+
+Bodies go through a quoted heredoc, so snippets containing quotes or apostrophes
+need no shell escaping. Index names and document ids are percent-encoded, which
+matters here: Enron document ids contain slashes.
+
 Changes nothing in OpenSearch. The skill never writes to the cluster; you review
 the script and run it.
 
