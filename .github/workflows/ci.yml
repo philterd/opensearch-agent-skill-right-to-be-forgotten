@@ -22,7 +22,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Byte-compile all sources
-        run: uv run python -m py_compile scripts/forget_me.py scripts/seed_demo.py scripts/lib/*.py
+        run: uv run python -m py_compile scripts/forget_me.py scripts/seed_demo.py scripts/seed_enron.py scripts/lib/*.py
 
       - name: Run unit tests
         run: uv run --with pytest pytest tests/ -q

@@ -86,6 +86,13 @@ uv run python scripts/forget_me.py setup
 > **Demo:** to create the synthetic story dataset, run
 > `uv run python scripts/forget_me.py seed-demo`. It prints a
 > `suggested_profile` and the ground-truth subject document ids.
+>
+> **Real data:** `uv run python scripts/forget_me.py seed-enron` loads a subset
+> of the Enron email corpus into `mail-enron`, streamed from CMU at run time
+> (never redistributed with this skill). Use it to exercise the workflow on real
+> correspondence. It has no ground-truth labels, so flagged documents must be
+> verified by reading them, and the people in it are real: report findings
+> without reproducing more personal data than the task requires.
 
 ### Phase 1 — Discover candidates (hybrid BM25 + neural)
 
@@ -300,6 +307,7 @@ Always summarize each run as:
 | `status` | Connectivity + whether the embedding model is deployed |
 | `setup` | Bootstrap cluster (if needed) + deploy model & pipelines |
 | `seed-demo` | Load the synthetic demo dataset |
+| `seed-enron` | Load a subset of the real Enron email corpus (fetched from CMU, not redistributed) |
 | `discover` | Phase 1 hybrid retrieval to candidates JSON |
 | `discover-direct` | Phase 1b: find docs with the subject's direct identifiers (auto-flagged) |
 | `evaluate` | Optional headless Phase 2 (needs `GDPR_LLM_BASE_URL`) |

@@ -145,3 +145,80 @@ def test_local_audit_chain_write_verify_and_tamper(tmp_path):
     _json.dump(obj, open(path1, "w"))
     broken = audit.verify_chain(d)
     assert broken["intact"] is False and broken["broken_at"] == 0
+
+
+# --- seed_enron: Enron corpus parsing (offline, no network, no cluster) ----- #
+
+import seed_enron  # noqa: E402
+
+_SAMPLE_MESSAGE = b"""Message-ID: <8012132.1075853083164.JavaMail.evans@thyme>\r
+Date: Fri, 14 Sep 2001 14:05:43 -0700 (PDT)\r
+From: fran.fagan@enron.com\r
+To: lynn.blair@enron.com, jodie.floyd@enron.com\r
+Cc: bradley.holmes@enron.com\r
+Subject: FW: Promotions and Transfers\r
+Mime-Version: 1.0\r
+Content-Type: text/plain; charset=us-ascii\r
+\r
+The gas control manager who ran the\r
+Kansas City winter operations training\r
+is transferring effective 7/16/01.\r
+"""
+
+
+def test_parse_member_extracts_headers_and_body():
+    doc = seed_enron.parse_member(_SAMPLE_MESSAGE, "blair-l", "personnel", 4000)
+    assert doc["from"] == "fran.fagan@enron.com"
+    assert doc["to"] == ["lynn.blair@enron.com", "jodie.floyd@enron.com"]
+    assert doc["cc"] == ["bradley.holmes@enron.com"]
+    assert doc["subject"] == "FW: Promotions and Transfers"
+    assert doc["custodian"] == "blair-l" and doc["folder"] == "personnel"
+    assert doc["@timestamp"] == "2001-09-14T21:05:43+00:00"  # normalised to UTC
+
+
+def test_parse_member_collapses_hard_wrapping():
+    """Bodies are hard-wrapped at ~72 chars; redaction matches snippets by exact
+    substring, so a phrase spanning a newline must be joined at ingest."""
+    doc = seed_enron.parse_member(_SAMPLE_MESSAGE, "blair-l", "personnel", 4000)
+    assert "\n" not in doc["message"]
+    assert "the gas control manager who ran the kansas city winter operations" \
+        in doc["message"].lower()
+
+
+def test_parse_member_rejects_empty_message():
+    assert seed_enron.parse_member(b"From: a@b.com\r\n\r\n", "c", "f", 4000) is None
+
+
+def test_clean_body_truncates_and_prefers_quote_boundary():
+    body = "real content " * 40 + "-----Original Message----- " + "quoted " * 100
+    out = seed_enron._clean_body(body, 600)
+    assert len(out) <= 600
+    assert "-----Original Message-----" not in out
+
+
+def test_member_regex_matches_maildir_layout():
+    m = seed_enron._MEMBER_RE.match("maildir/blair-l/meetings___nng_customer_mtg/16.")
+    assert m and m.groups() == ("blair-l", "meetings___nng_customer_mtg", "16")
+    assert seed_enron._MEMBER_RE.match("maildir/blair-l/notes") is None
+
+
+def test_curl_script_percent_encodes_document_ids():
+    """Doc ids containing '/' (file paths, S3 keys, maildir paths) must not be
+    interpolated raw into the URL: OpenSearch answers 'no handler found', and
+    curl -sS does not fail on HTTP errors, so the erasure would silently no-op."""
+    flagged = [{"doc_id": "blair-l/customer/18", "index": "mail-enron",
+                "confidence_score": 1.0, "identifying_snippets": ["a@b.com"],
+                "reasoning": "direct"}]
+
+    redact = build_curl_script(flagged, "redact_in_place")
+    assert "_update/blair-l%2Fcustomer%2F18?refresh=true" in redact
+    assert "_update/blair-l/customer/18" not in redact
+    # read-back verification must be encoded too, or it 404s
+    assert "_doc/blair-l%2Fcustomer%2F18?_source=message" in redact
+
+    delete = build_curl_script(flagged, "hard_delete")
+    assert "_doc/blair-l%2Fcustomer%2F18?refresh=true" in delete
+    assert "_doc/blair-l/customer/18" not in delete
+
+    # The human-readable comment keeps the real id, unencoded.
+    assert "# --- blair-l/customer/18  (confidence 1.0)" in redact

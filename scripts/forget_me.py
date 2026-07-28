@@ -13,6 +13,7 @@ Commands:
     status         Check OpenSearch connectivity and deployed embedding model
     setup          Bootstrap cluster (if needed) + deploy embedding model & pipelines
     seed-demo      Load the synthetic multi-index demo dataset
+    seed-enron     Load a subset of the real Enron email corpus (fetched from CMU)
     discover       Phase 1: hybrid BM25 + neural retrieval of candidate documents
     discover-direct Phase 1b: find docs containing the subject's direct identifiers
     evaluate       Phase 2 (optional headless): score candidates via a configured LLM
@@ -97,6 +98,24 @@ def cmd_seed_demo(args):
         text_field=args.text_field,
         embedding_field=args.embedding_field,
         noise_count=args.noise,
+    )
+    _out({"ok": True, **result})
+
+
+def cmd_seed_enron(args):
+    from lib.client import create_client
+    import seed_enron
+    client = create_client(bootstrap=True)
+    result = seed_enron.load(
+        client,
+        setup_neural=not args.no_neural,
+        text_field=args.text_field,
+        embedding_field=args.embedding_field,
+        source=args.source,
+        limit=args.limit,
+        custodians=args.custodian,
+        folders=args.folder,
+        max_chars=args.max_chars,
     )
     _out({"ok": True, **result})
 
@@ -267,6 +286,22 @@ def build_parser():
     sp.add_argument("--noise", type=int, default=450,
                     help="Number of generic noise docs to pad the corpus (default 450)")
     sp.set_defaults(func=cmd_seed_demo)
+
+    sp = sub.add_parser("seed-enron")
+    add_field_opts(sp)
+    sp.add_argument("--source", default=None,
+                    help="Local enron_mail_20150507.tar.gz (default: stream from CMU)")
+    sp.add_argument("--limit", type=int, default=2000,
+                    help="Maximum messages to index (default 2000)")
+    sp.add_argument("--custodian", action="append", default=None,
+                    help="Only index this custodian's maildir (repeatable)")
+    sp.add_argument("--folder", action="append", default=None,
+                    help="Only index this top-level folder, e.g. sent (repeatable)")
+    sp.add_argument("--max-chars", type=int, default=4000,
+                    help="Truncate message bodies to this length (default 4000)")
+    sp.add_argument("--no-neural", action="store_true",
+                    help="Seed plain BM25 data without deploying the embedding model")
+    sp.set_defaults(func=cmd_seed_enron)
 
     sp = sub.add_parser("discover")
     sp.add_argument("--index", required=True)

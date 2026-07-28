@@ -12,7 +12,21 @@ query — so we can only ever touch the exact documents the evaluator flagged.
 Legal-hold indices are refused up front.
 """
 
+from urllib.parse import quote
+
 REDACTION_TOKEN = "[GDPR_REDACTED]"
+
+
+def _url_path(value):
+    """Percent-encode an index name or document id for use in a URL path.
+
+    Document ids routinely contain characters that are structural in a URL —
+    '/' in file paths and S3 keys, '#', '?', spaces. Interpolating those raw
+    produces a URL that OpenSearch rejects with "no handler found", and since
+    `curl -sS` does not fail on HTTP errors, the erasure script would report
+    success while erasing nothing. safe="" encodes '/' as well.
+    """
+    return quote(str(value), safe="")
 
 # Painless: replace each identifying snippet in the target field with the
 # redaction token. Operates on the specific document only.
@@ -133,6 +147,7 @@ def build_curl_script(flagged, action_type, text_field="message",
 
     for item in flagged:
         idx, doc_id = item.get("index"), item.get("doc_id")
+        idx_u, doc_u = _url_path(idx), _url_path(doc_id)
         conf = item.get("confidence_score")
         lines.append(f"# --- {doc_id}  (confidence {conf})  index={idx} ---")
         reason = " ".join(str(item.get("reasoning") or "").split())
@@ -140,7 +155,7 @@ def build_curl_script(flagged, action_type, text_field="message",
             lines.append(f"# reason: {reason}")
         if action_type == "hard_delete":
             lines.append(
-                f'curl -sS $CURL_OPTS -X DELETE "$OS/{idx}/_doc/{doc_id}?refresh=true"'
+                f'curl -sS $CURL_OPTS -X DELETE "$OS/{idx_u}/_doc/{doc_u}?refresh=true"'
             )
         else:  # redact_in_place
             body = {
@@ -155,7 +170,7 @@ def build_curl_script(flagged, action_type, text_field="message",
                 }
             }
             lines.append(
-                f'curl -sS $CURL_OPTS -X POST "$OS/{idx}/_update/{doc_id}?refresh=true" \\'
+                f'curl -sS $CURL_OPTS -X POST "$OS/{idx_u}/_update/{doc_u}?refresh=true" \\'
             )
             lines.append("  -H 'Content-Type: application/json' --data-binary @- <<'JSON'")
             lines.append(_json.dumps(body, indent=2))
@@ -164,7 +179,9 @@ def build_curl_script(flagged, action_type, text_field="message",
 
     lines.append("# --- verification (read back the affected documents) ---")
     for item in flagged:
-        idx, doc_id = item.get("index"), item.get("doc_id")
-        lines.append(f'curl -sS $CURL_OPTS "$OS/{idx}/_doc/{doc_id}?_source={text_field}"; echo')
+        idx_u, doc_u = _url_path(item.get("index")), _url_path(item.get("doc_id"))
+        lines.append(
+            f'curl -sS $CURL_OPTS "$OS/{idx_u}/_doc/{doc_u}?_source={_url_path(text_field)}"; echo'
+        )
     lines.append("")
     return "\n".join(lines)
