@@ -18,13 +18,10 @@ REDACTION_TOKEN = "[GDPR_REDACTED]"
 
 
 def _url_path(value):
-    """Percent-encode an index name or document id for use in a URL path.
+    """Percent-encode an index or document id for a URL path.
 
-    Document ids routinely contain characters that are structural in a URL —
-    '/' in file paths and S3 keys, '#', '?', spaces. Interpolating those raw
-    produces a URL that OpenSearch rejects with "no handler found", and since
-    `curl -sS` does not fail on HTTP errors, the erasure script would report
-    success while erasing nothing. safe="" encodes '/' as well.
+    An id containing '/' otherwise yields "no handler found", which curl -sS
+    does not treat as an error: a silently failed erasure.
     """
     return quote(str(value), safe="")
 

@@ -5,30 +5,13 @@
 # ///
 """Seed a subset of the Enron email corpus for the gdpr-forget-me demo.
 
-Why this corpus: it is the only substantial collection of real, public email,
-so it exercises the workflow on documents nobody engineered to be findable. The
-direct-identifier pass in particular gets a real workout — genuine enron.com
-addresses, phone numbers, and PII co-located in the same message.
+Real public email, so nothing in it was written to be findable. Good for the
+direct-identifier pass; seed_demo.py is the clearer indirect demonstration
+(role-reference language is ~1% of messages here).
 
-Calibrate expectations on the indirect half. Role-reference language ("whoever
-has taken her place", "the person that has been calling") appears in only about
-1% of messages by regex proxy, and most instances either describe a generic role
-rather than an identifiable individual, or name the person elsewhere in the same
-message anyway. seed_demo.py remains the clearer demonstration of indirect
-contextual identification; this corpus is the realism check, not a richer supply
-of that pattern.
-
-It is also the honest test case for erasure. CMU's distribution page notes that
-some messages were already deleted "as part of a redaction effort due to
-requests from affected employees" — this corpus has been receiving erasure
-requests for two decades, and remains fully indexed and searchable regardless.
-
-The data is NOT redistributed with this skill. CMU grants no license; the page
-asks users to "be sensitive to the privacy of the people involved (and remember
-that many of these people were certainly not involved in any of the actions
-which precipitated the investigation)". This script fetches from CMU on demand,
-streaming the archive and stopping as soon as --limit messages are parsed, so a
-demo run pulls a fraction of the 1.7Gb archive.
+The data is NOT redistributed with this skill. CMU grants no license and asks
+users to be sensitive to the privacy of the people involved. This streams from
+CMU on demand and stops at --limit, pulling a fraction of the 1.7Gb archive.
 """
 
 import datetime
@@ -48,23 +31,18 @@ ENRON_URL = "https://www.cs.cmu.edu/~enron/enron_mail_20150507.tar.gz"
 DEFAULT_LIMIT = 2000
 DEFAULT_MAX_CHARS = 4000
 
-# maildir/<custodian>/<folder>/<n>  — anything else in the tar is skipped.
+# maildir/<custodian>/<folder>/<n>; anything else in the tar is skipped.
 _MEMBER_RE = re.compile(r"^maildir/([^/]+)/(.+)/(\d+)[._]?$")
 
-# Quoted-reply markers. We keep quoted text (it often carries the contextual
-# identification) but use these to find a sane truncation point.
+# Truncation points. Quoted text is kept: it often carries the identification.
 _QUOTE_MARKERS = ("-----Original Message-----", "---------------------- Forwarded")
 
 
 def _clean_body(raw, max_chars):
     """Collapse whitespace and truncate.
 
-    Collapsing every whitespace run to a single space is deliberate, not
-    cosmetic. Enron bodies are hard-wrapped at ~72 characters, so a phrase that
-    identifies someone routinely straddles a newline. Redaction replaces
-    `identifying_snippets` by exact substring match (see lib/actions.py), so a
-    snippet the agent copies out of a wrapped body would fail to match the
-    stored text. Normalising at ingest makes copied snippets matchable.
+    Bodies are hard-wrapped at ~72 chars and redaction matches snippets by
+    exact substring, so a phrase spanning a newline would not match.
     """
     if not raw:
         return ""
@@ -121,9 +99,8 @@ def _addresses(msg, header):
 def parse_member(raw, custodian, folder, max_chars):
     """Parse one maildir message into an indexable document, or None.
 
-    Takes bytes rather than a file object: email.message_from_binary_file wraps
-    the stream in a TextIOWrapper, which calls seekable() — and tarfile's
-    streaming _Stream has no such method, so it raises on every message.
+    Takes bytes: message_from_binary_file needs seekable(), which tarfile's
+    streaming _Stream lacks.
     """
     try:
         msg = email.message_from_bytes(raw)
@@ -135,8 +112,7 @@ def parse_member(raw, custodian, folder, max_chars):
     if not body and not subject:
         return None
 
-    # `message` is the single text field the rest of the pipeline reads and
-    # embeds. Subject leads so it carries weight in both BM25 and the vector.
+    # Single text field the pipeline embeds; subject leads so it carries weight.
     combined = f"{subject}. {body}" if subject else body
 
     return {
@@ -155,9 +131,7 @@ def parse_member(raw, custodian, folder, max_chars):
 def _open_stream(source):
     """Return (tarfile, closer) for a local path or the CMU URL.
 
-    Uses stream mode ("r|gz") throughout so we never need to download or
-    extract the whole 1.7Gb archive — iteration stops as soon as the caller has
-    enough messages.
+    Stream mode ("r|gz") so iteration can stop without downloading 1.7Gb.
     """
     if source and os.path.exists(source):
         tar = tarfile.open(source, mode="r|gz")
@@ -184,11 +158,8 @@ def iter_documents(source=None, limit=DEFAULT_LIMIT, custodians=None,
                    folders=None, max_chars=DEFAULT_MAX_CHARS):
     """Yield (doc_id, source_dict) for up to ``limit`` messages.
 
-    Members are grouped by custodian but the groups are not in alphabetical
-    order (the archive opens on blair-l), so there is no way to predict how far
-    a --custodian filter must stream before it finds a match; worst case it
-    reads the whole 1.7Gb. Point --source at a local copy of the tarball if you
-    intend to filter by custodian repeatedly.
+    Custodian groups are not alphabetical, so a --custodian filter may stream
+    the whole archive before matching. Use --source for repeated filtering.
     """
     wanted_custodians = set(custodians or [])
     wanted_folders = set(folders or [])
@@ -267,8 +238,8 @@ def load(client, setup_neural=True, text_field="message",
             raise RuntimeError(f"Bulk load had errors: {json.dumps(first)}")
         batch = []
 
-    # Smaller chunks than seed_demo: every document is embedded in the ingest
-    # pipeline, so oversized bulk requests risk a gateway timeout.
+    # Smaller chunks than seed_demo: ingest embeds each doc, so large bulk
+    # requests risk a gateway timeout.
     for doc_id, doc in iter_documents(source, limit, custodians, folders, max_chars):
         batch.append((doc_id, doc))
         custodians_seen.add(doc["custodian"])

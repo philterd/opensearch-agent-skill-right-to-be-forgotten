@@ -2,6 +2,12 @@
 
 An OpenSearch Agent Skill that fulfils GDPR "right to be forgotten" requests, including the data that keyword-based PII tools miss: people who are identifiable without their name ever appearing.
 
+**Vendor neutral by design.** No API keys, no cloud services, no proprietary
+dependencies. The embedding model is a local pretrained model deployed inside
+your cluster through ML Commons, so text never leaves your boundary. It runs on
+any OpenSearch distribution (self-managed, Amazon OpenSearch Service, or
+Serverless) and falls back to BM25 when no model is available.
+
 > **Want to run it?** [`DEMO.md`](DEMO.md) lists every command in order, from
 > starting OpenSearch to a verified erasure with an audit certificate.
 

@@ -84,7 +84,6 @@ uv run python scripts/forget_me.py discover-direct \
   --email "lynn.blair@enron.com" \
   --name "Lynn Blair" \
   --phone "713-853-5660" \
-  --no-scan-pii \
   --size 50 > direct.json
 ```
 
@@ -97,9 +96,9 @@ Matching is case-insensitive but snippets are recorded exactly as they appear
 in the document, so the request's `lynn.blair@enron.com` correctly yields the
 snippet `Lynn.Blair@ENRON.com`.
 
-Dropping `--no-scan-pii` also scans matched documents for co-located PII and
-redacts that too, so a message matched on the subject's own address comes back
-with everyone else's identifiers in it:
+By default it also scans matched documents for co-located PII and redacts that
+too, so a message matched on the subject's own address comes back with everyone
+else's identifiers in it:
 
 ```
 blair-l/customer___virginia_power_dominion/18
@@ -110,7 +109,8 @@ blair-l/customer___virginia_power_dominion/18
 Decide deliberately whether you want that. Redacting third-party identifiers
 from a document you were already erasing is defensible as data minimisation, but
 it is broader than the request asked for and those third parties are data
-subjects too. Also see the known issue in section 11 before enabling it.
+subjects too. Pass `--no-scan-pii` to restrict redaction to the subject's own
+identifiers.
 
 ## 5. Hybrid pass: find the documents that only describe the subject
 
@@ -271,14 +271,7 @@ To show tamper detection, edit a field in any certificate and re-run
 }
 ```
 
-## 11. Known issue
-
-The co-located PII scanner matches `HH:MM:SS` timestamps as IPv6 addresses, so
-timestamps are flagged for redaction when `--no-scan-pii` is omitted. The same
-pattern also misses genuine compressed IPv6 (`fe80::1`, `::1`). Use
-`--no-scan-pii` until this is fixed.
-
-## 12. Reset and teardown
+## 11. Reset and teardown
 
 Reset between runs:
 

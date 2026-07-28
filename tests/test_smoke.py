@@ -177,8 +177,7 @@ def test_parse_member_extracts_headers_and_body():
 
 
 def test_parse_member_collapses_hard_wrapping():
-    """Bodies are hard-wrapped at ~72 chars; redaction matches snippets by exact
-    substring, so a phrase spanning a newline must be joined at ingest."""
+    """Hard-wrapped bodies must be joined: redaction matches exact substrings."""
     doc = seed_enron.parse_member(_SAMPLE_MESSAGE, "blair-l", "personnel", 4000)
     assert "\n" not in doc["message"]
     assert "the gas control manager who ran the kansas city winter operations" \
@@ -203,9 +202,7 @@ def test_member_regex_matches_maildir_layout():
 
 
 def test_curl_script_percent_encodes_document_ids():
-    """Doc ids containing '/' (file paths, S3 keys, maildir paths) must not be
-    interpolated raw into the URL: OpenSearch answers 'no handler found', and
-    curl -sS does not fail on HTTP errors, so the erasure would silently no-op."""
+    """Raw '/' in an id yields 'no handler found', which curl -sS ignores."""
     flagged = [{"doc_id": "blair-l/customer/18", "index": "mail-enron",
                 "confidence_score": 1.0, "identifying_snippets": ["a@b.com"],
                 "reasoning": "direct"}]
@@ -222,3 +219,30 @@ def test_curl_script_percent_encodes_document_ids():
 
     # The human-readable comment keeps the real id, unencoded.
     assert "# --- blair-l/customer/18  (confidence 1.0)" in redact
+
+
+# --- IPv6 detection: timestamps must not be mistaken for addresses --------- #
+
+def test_ipv6_does_not_match_timestamps():
+    """A loose 2-7 group pattern would redact every timestamp in a log index."""
+    for text in ["Sent: 10/12/2001 09:11:28 AM", "at 23:59:59 UTC",
+                 "elapsed 14:23:10", "ratio 3:2:1", "12:34:56:78"]:
+        assert not [p for p in scan_text_pii(text) if p["type"] == "ipv6"], text
+
+
+def test_ipv6_does_not_match_mac_addresses_or_scope_operators():
+    for text in ["00:1A:2B:3C:4D:5E", "std::vector<int>", "Foo::bar()",
+                 "http://example.com:8080"]:
+        assert not [p for p in scan_text_pii(text) if p["type"] == "ipv6"], text
+
+
+def test_ipv6_matches_real_addresses_including_compressed():
+    for addr in ["2001:db8:85a3:0000:0000:8a2e:0370:7334", "fe80::1", "::1",
+                 "2001:db8::8a2e:370:7334", "fe80::a00:27ff:fe4e:66a1"]:
+        found = [p["value"] for p in scan_text_pii(f"host {addr} responded")]
+        assert addr in found, addr
+
+
+def test_ipv6_ignores_bare_unspecified_address():
+    """Valid address, but identifies nobody."""
+    assert not [p for p in scan_text_pii("see :: for details") if p["type"] == "ipv6"]

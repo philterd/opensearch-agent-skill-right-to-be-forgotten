@@ -22,7 +22,12 @@ import re
 _PATTERNS = {
     "email": re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"),
     "ipv4": re.compile(r"\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b"),
-    "ipv6": re.compile(r"\b(?:[A-Fa-f0-9]{1,4}:){2,7}[A-Fa-f0-9]{1,4}\b"),
+    # All 8 groups, or a '::' compression. Looser patterns match HH:MM:SS.
+    "ipv6": re.compile(
+        r"(?<![\w:.])(?:[A-Fa-f0-9]{1,4}:){7}[A-Fa-f0-9]{1,4}(?![\w:.])"
+        r"|(?<![\w:.])(?:[A-Fa-f0-9]{1,4})?(?::[A-Fa-f0-9]{1,4}){0,6}::"
+        r"(?:[A-Fa-f0-9]{1,4})?(?::[A-Fa-f0-9]{1,4}){0,6}(?![\w:.])"
+    ),
     "phone": re.compile(r"\+?\d[\d\s().\-]{7,}\d"),
 }
 
@@ -37,6 +42,8 @@ def scan_text_pii(text):
             value = m.group(0).strip()
             if kind == "phone" and len(re.sub(r"\D", "", value)) < 10:
                 continue  # too few digits to be a real phone number
+            if kind == "ipv6" and not re.search(r"[A-Fa-f0-9]", value):
+                continue  # bare '::' identifies nobody
             key = (kind, value)
             if key not in seen:
                 seen.add(key)
