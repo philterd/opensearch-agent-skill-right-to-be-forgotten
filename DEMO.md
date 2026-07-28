@@ -60,7 +60,15 @@ Measured timings, with the model already deployed:
 | 8000 | 64 s | 7 |
 
 Useful options: `--custodian blair-l` to index one mailbox, `--source` to point
-at a local copy of the tarball, `--no-neural` for BM25 only.
+at a local copy of the tarball, `--no-neural` for BM25 only, `--max-chars` to
+change body truncation (default 4000).
+
+Two things to know. The archive groups messages by custodian but not in
+alphabetical order, so `--custodian` may have to stream a long way before it
+matches; use `--source` with a local tarball if you filter repeatedly. And
+message bodies have all whitespace runs collapsed to single spaces at ingest,
+because Enron bodies are hard-wrapped at ~72 characters and redaction matches
+snippets by exact substring, so a phrase straddling a newline would not match.
 
 To inspect what gets indexed without touching OpenSearch:
 
@@ -89,9 +97,20 @@ Matching is case-insensitive but snippets are recorded exactly as they appear
 in the document, so the request's `lynn.blair@enron.com` correctly yields the
 snippet `Lynn.Blair@ENRON.com`.
 
-Dropping `--no-scan-pii` also scans matched documents for co-located PII
-(other people's emails, phones, IPs) and redacts those too. See the known issue
-in section 10 before using it.
+Dropping `--no-scan-pii` also scans matched documents for co-located PII and
+redacts that too, so a message matched on the subject's own address comes back
+with everyone else's identifiers in it:
+
+```
+blair-l/customer___virginia_power_dominion/18
+  snippets: ['Lynn.Blair@enron.com', 'greg_hathaway@dom.com', 'Terry.Kowalke@enron.com',
+             'Gerry.Medeles@enron.com', 'Jo.Williams@enron.com', 'John.Buchanan@enron.com']
+```
+
+Decide deliberately whether you want that. Redacting third-party identifiers
+from a document you were already erasing is defensible as data minimisation, but
+it is broader than the request asked for and those third parties are data
+subjects too. Also see the known issue in section 11 before enabling it.
 
 ## 5. Hybrid pass: find the documents that only describe the subject
 

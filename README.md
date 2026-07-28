@@ -4,61 +4,48 @@ An OpenSearch Agent Skill that fulfils GDPR "right to be forgotten" requests, in
 
 ## The problem
 
-When an organisation receives a GDPR erasure ("right to be forgotten") or CCPA
-deletion request, some of the data is easy to find. Where the person is named or
-their email appears, a regex or dictionary scan matches it directly:
+When an erasure request arrives, some of the data is easy to find. Where the
+person is named or their email appears, a regex matches it directly, and the
+skill's direct-identifier pass does exactly that.
 
-> *"Deploy by j.tanaka@example.com: checkout cart-widget build 5.2 promoted to prod"*
-
-`gdpr-forget-me` does exactly that with its direct-identifier pass, and it is fast
-and exact:
-
-```bash
-$ uv run python scripts/forget_me.py discover-direct \
-    --index "logs-application-*" --email "j.tanaka@example.com"
-# flags the document, snippet ["j.tanaka@example.com"], confidence 1.0
-```
-
-The hard part is the indirect personal data scattered through logs, traces,
-incident reviews, and tickets. GDPR Recital 26 is explicit that a person is
-personal data whenever they are identifiable indirectly, "by reference to one or
-more factors specific to their identity." In practice that looks like:
+The hard part is the personal data scattered through logs, traces, incident
+reviews, and tickets where the person is only *described*:
 
 > *"the solo senior frontend engineer on-call during the #4091 outage who
 > resigned at the end of March"*
 
-No name, no employee ID, or other direct identifier. Direct scanning alone leaves this
-data behind, and the organisation is out of compliance without knowing it. This
-is the gap the skill closes: it runs the direct pass and then adds hybrid search
-plus agent reasoning to find the records where the person is only described.
+No name, no employee ID, no direct identifier. GDPR Recital 26 is explicit that
+someone is personal data whenever they are identifiable indirectly, "by
+reference to one or more factors specific to their identity." Direct scanning
+alone leaves this behind. This is the gap the skill closes: it runs the direct
+pass, then adds hybrid search plus agent reasoning to find the records where the
+person is only described.
 
 ## What this skill does
 
-`gdpr-forget-me` turns any Agent-Skills-compatible IDE (Claude Code, Cursor,
-Kiro, Copilot, Windsurf, Gemini CLI, Codex) into a privacy-engineering agent that:
+Turns any Agent-Skills-compatible IDE (Claude Code, Cursor, Kiro, Copilot,
+Windsurf, Gemini CLI, Codex) into a privacy-engineering agent that:
 
-1. Discovers candidate documents two ways: a direct-identifier pass (exact name,
-   email, employee id, phone, IP) for the literal hits, and hybrid BM25 and
-   neural/vector search so paraphrased, name-free descriptions are surfaced too.
-2. Disambiguates each candidate by reasoning (agent-native) whether it uniquely
-   identifies the subject, scoring confidence and extracting the exact
-   identifying snippets. A `precision_mode` threshold (`strict_precision`,
-   `balanced`, or `high_recall`) controls precision versus recall.
-3. Previews the exact documents and DSL before anything is written.
-4. Remediates with the least-destructive option: `redact_in_place` (replace only
-   the identifying snippets with `[GDPR_REDACTED]`, preserving operational logs)
-   or `hard_delete`. It never writes to the cluster itself; it emits a reviewable
-   curl script the human runs, and legal-hold indices are refused.
-5. Verifies every targeted document: the generated curl script includes read-back
-   commands to confirm each snippet is gone or the document is deleted after you
-   run it.
-6. Records every run in a local, hash-chained erasure certificate written at
-   generation time (no cluster writes), the evidence GDPR Art. 5(2) and Art. 30
-   require you to produce.
+1. **Discovers** candidates two ways: a direct-identifier pass (name, email,
+   employee id, phone, IP) for literal hits, and hybrid BM25 plus neural/vector
+   search for name-free descriptions.
+2. **Disambiguates** each candidate by reasoning about whether it uniquely
+   identifies the subject, scoring confidence and extracting exact identifying
+   snippets. A `precision_mode` threshold (`strict_precision` 0.88, `balanced`
+   0.75, `high_recall` 0.60) controls precision versus recall.
+3. **Previews** the exact documents and DSL before anything is written.
+4. **Remediates** with `redact_in_place` (replace only the identifying snippets
+   with `[GDPR_REDACTED]`, preserving the rest of the record) or `hard_delete`.
+5. **Verifies**: the generated script carries read-back commands.
+6. **Records** every run in a local, hash-chained erasure certificate, the
+   evidence GDPR Art. 5(2) and Art. 30 require you to produce.
+
+The skill never writes to OpenSearch. It emits a reviewable curl script that a
+human inspects and runs.
 
 ## Quickstart
 
-Requires `uv` and, for the local demo, Docker.
+Requires `uv`, and Docker for the local demo.
 
 ```bash
 # Install into your agent (Claude Code / Cursor / Kiro / ...)
@@ -73,149 +60,27 @@ Then ask your agent, for example:
 > Checkout, was sole on-call during incident #4091, and resigned end of March
 > 2024, from `logs-application-*`. Redact, don't delete."
 
-### Datasets
+**See [`DEMO.md`](DEMO.md)** for the full command-by-command walkthrough, from
+starting OpenSearch to a verified erasure with an audit certificate.
 
-Two seed commands, for two different jobs.
+## Datasets
 
-| Command | Corpus | Ships with the skill? | Use it for |
-|---|---|---|---|
-| `seed-demo` | ~493 synthetic log documents | Yes, generated by `scripts/seed_demo.py` | Learning the workflow. Small, fast, deterministic, and the ground truth is in the seed script so you can check the agent's answer. |
-| `seed-enron` | Real Enron email, subset of ~0.5M messages | No. Fetched from CMU on demand | Checking the workflow against data nobody engineered to be findable. Real enron.com addresses and phone numbers give the direct-identifier pass a genuine workout. |
+| Command | Corpus | Ships with the skill? |
+|---|---|---|
+| `seed-demo` | ~493 synthetic log documents | Yes, generated by `scripts/seed_demo.py` |
+| `seed-enron` | Real Enron email, subset of ~0.5M messages | No. Streamed from CMU on demand |
 
-Start with `seed-demo`. Move to `seed-enron` when you want to know how the
-workflow behaves on real documents.
+`seed-demo` is deterministic, offline, and its ground truth lives in the seed
+script, so you can check the agent's answer. It is also the clearer
+demonstration of *indirect* identification: role-reference language appears in
+only around 1% of Enron messages, and most instances describe a generic role or
+name the person elsewhere in the same message anyway.
 
-One expectation to set: `seed-demo` remains the clearer demonstration of
-*indirect* identification. Role-reference language appears in only around 1% of
-Enron messages, and most instances describe a generic role rather than an
-identifiable individual, or name the person elsewhere in the message anyway.
-Enron's strength is realism and direct-identifier coverage, not a richer supply
-of name-free descriptions.
+`seed-enron` is the realism check. Nothing in it was written to be found, and
+real enron.com addresses and phone numbers give the direct-identifier pass a
+genuine workout.
 
-### Try the built-in demo end to end
-
-```bash
-# 1. Start OpenSearch + deploy the local embedding model + load the demo data
-uv run python scripts/forget_me.py seed-demo
-
-# 2. Discover candidates (hybrid search) — over-retrieves on purpose
-uv run python scripts/forget_me.py discover \
-  --index "logs-application-demo" \
-  --profile "Senior frontend engineer who owned the Checkout service, sole on-call during incident #4091, resigned end of March 2024." \
-  --keywords "checkout frontend incident 4091 resigned on-call" \
-  --size 50 > candidates.json
-
-# 2b. Direct pass: find the easy literal hits from identifiers in the request
-uv run python scripts/forget_me.py discover-direct \
-  --index "logs-application-demo" \
-  --name "Jun Tanaka" --email "j.tanaka@example.com" --id "EMP-4471" > direct.json
-
-# 3. The agent evaluates the hybrid candidates with the judgment prompt in
-#    SKILL.md and writes evaluations.json (or use `evaluate` with GDPR_LLM_BASE_URL).
-#    direct.json is already flagged and needs no agent step; act on both sets.
-
-# 4. Preview the filtered plan (writes nothing)
-uv run python scripts/forget_me.py plan \
-  --evaluations @evaluations.json --candidates @candidates.json \
-  --precision-mode balanced --action-type redact_in_place
-
-# 5. Emit reviewable curl commands + a local erasure certificate.
-#    Nothing is changed in OpenSearch; the skill never writes to the cluster.
-uv run python scripts/forget_me.py export-curl \
-  --evaluations @evaluations.json --candidates @candidates.json \
-  --precision-mode balanced --action-type hard_delete \
-  --index "logs-application-demo" --profile "..." --out forget-me.sh
-
-# 6. Review forget-me.sh, then run it yourself to apply
-bash forget-me.sh
-
-# 7. Confirm the certificate chain (reads local files only)
-uv run python scripts/forget_me.py verify-chain
-uv run python scripts/forget_me.py audit-log
-```
-
-The demo dataset is about 493 log documents: one subject identified indirectly
-across 8 of them (described but never named), 3 more that name the subject
-directly for the direct-identifier pass, roughly 32 hard decoys engineered to
-fool keyword search (other named engineers, other incidents, the same role on a
-different squad, on-call rotation members, a same-role intern with the wrong
-timeline), and about 450 generic noise entries so the corpus reads like a real
-log index. Use `--noise` on `seed-demo` to change the volume. Watching hybrid
-search pull the relevant candidates out of the haystack and the agent's reasoning
-reject the decoys is the story for the 5-minute video.
-
-### Try it on real email (Enron)
-
-The synthetic demo has a weakness: every document in it was written to be found.
-`seed-enron` runs the same workflow over real correspondence, where nothing was
-arranged for the tool's benefit.
-
-```bash
-# Loads ~2000 messages. Streams from CMU and stops as soon as it has enough,
-# so it pulls a fraction of the 1.7Gb archive rather than downloading it.
-uv run python scripts/forget_me.py seed-enron
-
-# Parse without touching OpenSearch, to see what gets indexed:
-uv run python scripts/seed_enron.py --dry-run --limit 5
-```
-
-Then run the ordinary workflow against `mail-enron`, using both passes:
-
-```bash
-# Indirect: the person described rather than named
-uv run python scripts/forget_me.py discover \
-  --index "mail-enron" \
-  --profile "The gas control manager in Kansas City who ran the winter operations customer training sessions." \
-  --keywords "gas control winter ops training Kansas City customer" \
-  --size 50 > candidates.json
-
-# Direct: their own identifiers, straight from the request
-uv run python scripts/forget_me.py discover-direct \
-  --index "mail-enron" --email "lynn.blair@enron.com" --name "Lynn Blair" > direct.json
-```
-
-Unlike `seed-demo`, this corpus has **no ground-truth labels**. It is real
-email, so verify flagged documents by reading them. That is the point of the
-exercise: it is the honest version of the task.
-
-Real email also surfaces a behavior the synthetic demo cannot. The direct pass
-scans matched documents for *co-located* PII, so a message that matched on the
-subject's own address comes back with everyone else's identifiers in it too:
-
-```
-blair-l/customer___virginia_power_dominion/18
-  snippets: ['Lynn.Blair@enron.com', 'greg_hathaway@dom.com', 'Terry.Kowalke@enron.com',
-             'Gerry.Medeles@enron.com', 'Jo.Williams@enron.com', 'John.Buchanan@enron.com']
-blair-l/meetings___nng_customer_mtg/10
-  snippets: ['Lynn Blair', '713-853-5660']
-```
-
-Decide deliberately whether that is what you want. Redacting third-party
-identifiers from a document you were already erasing is defensible as data
-minimisation, but it is a broader change than the request asked for, and those
-third parties are data subjects too. `--no-scan-pii` restricts redaction to the
-subject's own identifiers.
-
-Things worth knowing before you run it:
-
-- **Scope.** The default `--limit 2000` lands entirely within a single
-  custodian's mailbox (`blair-l`, which has 3,415 messages), which is a
-  realistic DSAR scope on its own. Reaching several custodians takes a larger
-  limit: roughly 7,500 messages spans 7, and 30,000 spans 16. Use
-  `--custodian` to target a specific mailbox, but note the archive is grouped
-  by custodian in a non-alphabetical order, so a filter may have to stream a
-  long way before it matches. Pass `--source` with a local copy of the tarball
-  if you plan to do that repeatedly.
-- **Cost.** Parsing is cheap (~2,000 messages/second). The time is spent
-  embedding each document in the ingest pipeline, so raise `--limit`
-  deliberately.
-- **Body handling.** Bodies are truncated (`--max-chars`, default 4000) and all
-  whitespace runs are collapsed to single spaces. That second part is load-
-  bearing: Enron bodies are hard-wrapped at ~72 characters, and redaction
-  replaces `identifying_snippets` by exact substring match, so a phrase
-  straddling a newline would fail to match the stored text.
-
-#### Provenance and why this corpus
+### Provenance of the Enron corpus
 
 The data is **not redistributed with this skill**, and `.gitignore` blocks a
 local copy from being committed. `seed-enron` fetches from
@@ -224,81 +89,37 @@ license; it distributes the corpus "as a resource for researchers who are
 interested in improving current email tools," and asks users to "be sensitive
 to the privacy of the people involved (and remember that many of these people
 were certainly not involved in any of the actions which precipitated the
-investigation)." Take that seriously: most of these people are private
-individuals whose email became public because of an investigation into other
-people's conduct.
+investigation)." Most of these people are private individuals whose email became
+public because of an investigation into other people's conduct.
 
-That is also exactly why it is the right test case. This corpus is personal data
-that has long outlived any lawful basis for processing and remains fully indexed
-and searchable more than two decades on. CMU's own page records that some
-messages were deleted "as part of a redaction effort due to requests from
-affected employees". Erasure requests against this dataset are not
-hypothetical; they have been arriving for twenty years. A tool for finding and
-removing a person from a search index should be able to show its work here.
-
-## Running a demo
-
-`DEMO.md` lists the commands to run a full erasure against real Enron email, in
-order, with a description of what each one does.
+That is also why it is the right test case. This corpus is personal data that
+has long outlived any lawful basis for processing and remains fully indexed and
+searchable more than two decades on. CMU's own page records that some messages
+were deleted "as part of a redaction effort due to requests from affected
+employees". Erasure requests against this dataset are not hypothetical.
 
 ## What export-curl produces
 
-`export-curl` writes a self-contained, reviewable bash script and changes nothing
-in the cluster until you run it yourself. Each flagged document gets one precise
-`(index, _id)` command, followed by read-back verification. It also writes a
-local, hash-chained erasure certificate under `gdpr-audit/` recording exactly
-what the script will erase. Example for `--action-type hard_delete`, trimmed to
-two documents:
+A self-contained bash script that changes nothing until you run it. One precise
+`(index, _id)` command per flagged document, the reason inline, followed by
+read-back verification:
 
 ```bash
-#!/usr/bin/env bash
-# GDPR Forget-Me for OpenSearch — remediation commands. REVIEW BEFORE RUNNING.
-# Nothing in OpenSearch has been modified by generating this file.
-# Action: hard_delete   Documents: 8
-# Target profile: Senior frontend engineer who owned the Checkout service ...
-# Precision mode: balanced
-#
-# Set OPENSEARCH_URL to your endpoint. Add auth if your cluster requires it,
-# e.g.  export CURL_OPTS='-u admin:yourPassword -k'
-set -euo pipefail
-OS="${OPENSEARCH_URL:-http://localhost:9200}"
-CURL_OPTS="${CURL_OPTS:-}"
-
 # --- sub-1  (confidence 0.92)  index=logs-application-demo ---
 # reason: Lead frontend engineer who owned Checkout, off during the #4091 outage.
 curl -sS $CURL_OPTS -X DELETE "$OS/logs-application-demo/_doc/sub-1?refresh=true"
-
-# --- sub-8  (confidence 0.9)  index=logs-application-demo ---
-# reason: Sole frontend engineer on-call the night of #4091, offboarding March 31.
-curl -sS $CURL_OPTS -X DELETE "$OS/logs-application-demo/_doc/sub-8?refresh=true"
-
-# ... one DELETE per flagged document ...
 
 # --- verification (read back the affected documents) ---
 curl -sS $CURL_OPTS "$OS/logs-application-demo/_doc/sub-1?_source=message"; echo
 ```
 
-For `--action-type redact_in_place`, each command is a `POST .../_update/<id>`
-whose body is passed through a quoted heredoc, so snippets containing quotes or
-apostrophes need no shell escaping:
+For `redact_in_place` each command is a `POST .../_update/<id>` whose Painless
+body replaces the identifying snippets. Bodies are passed through a quoted
+heredoc, so snippets containing quotes need no shell escaping, and index names
+and document ids are percent-encoded.
 
-```bash
-# --- sub-1  (confidence 0.92)  index=logs-application-demo ---
-curl -sS $CURL_OPTS -X POST "$OS/logs-application-demo/_update/sub-1?refresh=true" \
-  -H 'Content-Type: application/json' --data-binary @- <<'JSON'
-{
-  "script": {
-    "lang": "painless",
-    "source": "if (ctx._source.containsKey(params.field) && ctx._source[params.field] != null) { String v = ctx._source[params.field].toString(); for (s in params.snippets) { v = v.replace(s, params.redaction); } ctx._source[params.field] = v; }",
-    "params": {
-      "field": "message",
-      "redaction": "[GDPR_REDACTED]",
-      "snippets": ["lead frontend engineer who owned the Checkout service"]
-    }
-  }
-}
-JSON
-```
+Alongside it, `export-curl` writes a hash-chained erasure certificate to
+`gdpr-audit/`. Verify the chain any time with `verify-chain`.
 
 ## Configuration
 
@@ -314,21 +135,19 @@ JSON
 
 ## Safety
 
-The skill never writes to the cluster. It emits a reviewable curl script that the
-human inspects and runs. `export-curl` refuses any index matching a
-`--legal-hold` pattern, and every generated command targets documents by exact
-`(index, _id)` rather than a blind query. Each run also writes a local,
-hash-chained erasure certificate (no cluster writes) recording exactly what the
-script will erase, and the script itself carries read-back verification commands.
-See the Safety rules in `SKILL.md`.
+The skill never writes to the cluster. `export-curl` refuses any index matching
+a `--legal-hold` pattern, every generated command targets documents by exact
+`(index, _id)` rather than a blind query, and each run writes a hash-chained
+erasure certificate without touching the cluster. See the Safety rules in
+[`SKILL.md`](SKILL.md).
 
 ## This is not legal advice
 
-`gdpr-forget-me` is an illustrative example of how one might automate "forgetting"
-a user's personal data in OpenSearch: the discovery, review, redaction or
-deletion, verification, and audit mechanics. It is not legal advice, not a
-certified compliance product, and not a guarantee of GDPR, CCPA, or any other
-regulatory compliance.
+`gdpr-forget-me` is an illustrative example of how one might automate
+"forgetting" a user's personal data in OpenSearch: the discovery, review,
+redaction or deletion, verification, and audit mechanics. It is not legal
+advice, not a certified compliance product, and not a guarantee of GDPR, CCPA,
+or any other regulatory compliance. Detection is probabilistic.
 
 Whether a given erasure is required, permitted, or complete, and which data,
 retention obligations, and legal holds apply, is a legal determination. Consult
