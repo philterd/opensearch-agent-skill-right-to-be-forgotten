@@ -17,8 +17,15 @@ The dataset mixes a handful of documents that indirectly identify that person
 with many decoys designed to fool naive keyword search: other engineers (named),
 other incidents, other squads, and generic operational noise. Ground-truth
 labels live here in the seed script, never in the index.
+
+The labels below (``sub-``, ``dsub-``, ``dec-``, ``noise-``) are *internal* names
+for the maintainer of this file. They are hashed into opaque document ids before
+indexing, and the answer key is written to a separate file rather than printed,
+so that an agent evaluating the corpus cannot read the labels off the candidates
+it is meant to judge. See ``doc_id_for`` and ``split_ground_truth``.
 """
 
+import hashlib
 import json
 import os
 import sys
@@ -26,6 +33,25 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 DEMO_INDEX = "logs-application-demo"
+
+# Where the answer key is written, relative to the working directory.
+GROUND_TRUTH_PATH = os.path.join("gdpr-eval", "demo-ground-truth.json")
+
+# Namespace for the id digest. Bump it only if you want existing demo indices to
+# be considered stale; every id changes with it.
+_ID_NAMESPACE = "gdpr-forget-me/demo/v1"
+
+
+def doc_id_for(label_id):
+    """Map an internal label ('sub-1') to the opaque id used in the index.
+
+    Class-revealing ids would defeat the evaluation: `discover` hands each
+    candidate's `doc_id` to the agent, so an id of 'sub-1' or 'dec-7' announces
+    its own ground-truth label before the agent judges anything. The digest is
+    deterministic, so the corpus stays byte-stable across runs.
+    """
+    digest = hashlib.sha1(f"{_ID_NAMESPACE}:{label_id}".encode()).hexdigest()
+    return f"d-{digest[:12]}"
 
 # --- Documents that INDIRECTLY identify the subject (true positives) -------- #
 SUBJECT_DOCS = [
@@ -157,8 +183,8 @@ _NOISE_SVCS = ["orders", "search", "catalog", "inventory", "payments", "shipping
 
 
 def generate_noise(count):
-    """Yield ``count`` deterministic noise docs (id, source). No randomness, so
-    the dataset is byte-stable and reproducible for the demo/video."""
+    """Yield ``count`` deterministic noise docs (label id, source). No randomness,
+    so the dataset is byte-stable and reproducible for the demo/video."""
     for i in range(count):
         svc, lvl, tmpl = _NOISE_SVCS[i % len(_NOISE_SVCS)], None, None
         service, level, template = _NOISE_TEMPLATES[i % len(_NOISE_TEMPLATES)]
@@ -177,9 +203,53 @@ DEFAULT_NOISE_COUNT = 450
 
 
 def _all_docs(noise_count):
-    for doc_id, ts, service, level, message in SUBJECT_DOCS + DIRECT_DOCS + DECOY_DOCS:
-        yield doc_id, {"@timestamp": ts, "service": service, "level": level, "message": message}
-    yield from generate_noise(noise_count)
+    for label_id, ts, service, level, message in SUBJECT_DOCS + DIRECT_DOCS + DECOY_DOCS:
+        yield doc_id_for(label_id), {"@timestamp": ts, "service": service,
+                                     "level": level, "message": message}
+    for label_id, source in generate_noise(noise_count):
+        yield doc_id_for(label_id), source
+
+
+def build_ground_truth(noise_count):
+    """The answer key: which class each indexed document belongs to."""
+    classes = {
+        "subject_doc_ids": [d[0] for d in SUBJECT_DOCS],
+        "direct_doc_ids": [d[0] for d in DIRECT_DOCS],
+        "decoy_doc_ids": [d[0] for d in DECOY_DOCS],
+        "noise_doc_ids": [f"noise-{i+1}" for i in range(noise_count)],
+    }
+    gt = {key: [doc_id_for(l) for l in labels] for key, labels in classes.items()}
+    gt["counts"] = {key.replace("_doc_ids", ""): len(v) for key, v in gt.items()}
+    # Reverse map so a maintainer can trace a flagged id back to the source doc.
+    gt["label_by_doc_id"] = {doc_id_for(l): l
+                             for labels in classes.values() for l in labels}
+    return gt
+
+
+def split_ground_truth(result, path=GROUND_TRUTH_PATH, reveal=False):
+    """Move the answer key out of ``result`` and onto disk.
+
+    ``result`` is what the CLI prints, which in this skill lands in the context
+    of the agent that then evaluates the corpus. Printing the subject ids there
+    contaminates any score measured from that run, so the key goes to a file the
+    scoring step reads afterwards. ``reveal`` puts it back for a human who is
+    deliberately inspecting the corpus.
+    """
+    ground_truth = result.pop("ground_truth")
+    directory = os.path.dirname(path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(ground_truth, fh, indent=2)
+    result["ground_truth_file"] = path
+    result["ground_truth_note"] = (
+        "Answer key withheld from this output and written to the file above. "
+        "Do not read it while evaluating: it lists which documents identify the "
+        "subject, which is the question the evaluation is meant to answer."
+    )
+    if reveal:
+        result["ground_truth"] = ground_truth
+    return result
 
 
 def load(client, setup_neural=True, text_field="message", embedding_field="message_embedding",
@@ -192,7 +262,8 @@ def load(client, setup_neural=True, text_field="message", embedding_field="messa
 
     When setup_neural is True, the embedding model + pipelines are deployed and
     the index is k-NN enabled so full hybrid search works. Returns a summary
-    including the ground-truth subject doc ids (for demo narration only).
+    The returned summary carries the answer key under ``ground_truth``; callers
+    that print it must pass it through ``split_ground_truth`` first.
     """
     from lib.model import setup_neural_search, create_knn_index, INGEST_PIPELINE_ID
 
@@ -229,14 +300,9 @@ def load(client, setup_neural=True, text_field="message", embedding_field="messa
     return {
         "index": DEMO_INDEX,
         "documents_loaded": len(docs),
-        "subject_docs": len(SUBJECT_DOCS),
-        "direct_docs": len(DIRECT_DOCS),
-        "decoy_docs": len(DECOY_DOCS),
-        "noise_docs": noise_count,
         "neural_search": neural is not None,
         "neural": neural,
-        "ground_truth_subject_doc_ids": [d[0] for d in SUBJECT_DOCS],
-        "ground_truth_direct_doc_ids": [d[0] for d in DIRECT_DOCS],
+        "ground_truth": build_ground_truth(noise_count),
         "suggested_profile": (
             "Senior frontend engineer who owned the Checkout service, was the "
             "sole on-call during the incident #4091 outage, and resigned at the "
@@ -255,7 +321,11 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Seed the gdpr-forget-me demo dataset")
     ap.add_argument("--noise", type=int, default=DEFAULT_NOISE_COUNT)
     ap.add_argument("--no-neural", action="store_true")
+    ap.add_argument("--ground-truth-out", default=GROUND_TRUTH_PATH)
+    ap.add_argument("--reveal-ground-truth", action="store_true",
+                    help="Also print the answer key (contaminates agent evaluation)")
     a = ap.parse_args()
     result = load(create_client(bootstrap=True), setup_neural=not a.no_neural,
                   noise_count=a.noise)
-    print(json.dumps(result, indent=2))
+    print(json.dumps(split_ground_truth(result, a.ground_truth_out,
+                                        a.reveal_ground_truth), indent=2))

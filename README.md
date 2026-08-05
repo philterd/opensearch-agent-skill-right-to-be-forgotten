@@ -76,7 +76,16 @@ Then ask your agent, for example:
 | `seed-enron` | Real Enron email, subset of ~0.5M messages | No. Streamed from CMU on demand |
 
 `seed-demo` is deterministic and offline, and its ground truth lives in the seed
-script. `seed-enron` is the realism check: nothing in it was written to be
+script. Because the agent is also the evaluator, the corpus is built so it cannot
+see that answer key: document ids are opaque digests rather than labels like
+`sub-1`, and `seed-demo` writes the key to `gdpr-eval/demo-ground-truth.json`
+instead of printing it.
+
+Building ground truth for *indirect* matches is the hard part, since whether a
+name-free description identifies someone depends on facts the index does not
+contain. [`EVALUATION.md`](EVALUATION.md) sets out a method that derives labels
+from data the corpus already holds, how it applies to Enron, and what the
+resulting numbers do and do not mean. `seed-enron` is the realism check: nothing in it was written to be
 found. Role-reference language appears in only around 1% of Enron messages, and
 most instances describe a generic role or name the person elsewhere in the same
 message, so `seed-demo` remains the clearer demonstration of *indirect*

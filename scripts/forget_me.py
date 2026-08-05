@@ -99,6 +99,12 @@ def cmd_seed_demo(args):
         embedding_field=args.embedding_field,
         noise_count=args.noise,
     )
+    # The answer key goes to a file, not to stdout: this output lands in the
+    # context of the agent that then evaluates the corpus.
+    result = seed_demo.split_ground_truth(
+        result,
+        path=args.ground_truth_out or seed_demo.GROUND_TRUTH_PATH,
+        reveal=args.reveal_ground_truth)
     _out({"ok": True, **result})
 
 
@@ -285,6 +291,10 @@ def build_parser():
                     help="Seed plain BM25 data without deploying the embedding model")
     sp.add_argument("--noise", type=int, default=450,
                     help="Number of generic noise docs to pad the corpus (default 450)")
+    sp.add_argument("--ground-truth-out", default=None,
+                    help="Where to write the answer key (default gdpr-eval/demo-ground-truth.json)")
+    sp.add_argument("--reveal-ground-truth", action="store_true",
+                    help="Also print the answer key; contaminates any agent evaluation of this run")
     sp.set_defaults(func=cmd_seed_demo)
 
     sp = sub.add_parser("seed-enron")

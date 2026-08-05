@@ -3,6 +3,7 @@
 Run:  uv run --with pytest pytest tests/ -q
 """
 
+import json
 import os
 import sys
 
@@ -13,6 +14,7 @@ from lib.actions import build_action_plan, build_curl_script, _REDACT_PAINLESS  
 from lib.discovery import build_hybrid_query, build_bm25_query  # noqa: E402
 from lib.direct import (scan_text_pii, normalize_identifiers, build_direct_query,  # noqa: E402
                         _find_verbatim)
+import seed_demo  # noqa: E402
 
 
 def test_thresholds():
@@ -246,3 +248,47 @@ def test_ipv6_matches_real_addresses_including_compressed():
 def test_ipv6_ignores_bare_unspecified_address():
     """Valid address, but identifies nobody."""
     assert not [p for p in scan_text_pii("see :: for details") if p["type"] == "ipv6"]
+
+
+# --- demo corpus: the agent must not be able to read the answer key --------- #
+
+def test_demo_doc_ids_carry_no_label():
+    """An id like 'sub-1' would hand the agent the ground truth via `discover`."""
+    gt = seed_demo.build_ground_truth(noise_count=5)
+    every_id = [i for k, v in gt.items() if k.endswith("_doc_ids") for i in v]
+    assert every_id, "expected some ids"
+    for doc_id in every_id:
+        assert doc_id.startswith("d-")
+        for label in ("sub", "dsub", "dec", "noise"):
+            assert label not in doc_id
+
+
+def test_demo_doc_ids_are_deterministic_and_unique():
+    a = seed_demo.build_ground_truth(noise_count=5)
+    b = seed_demo.build_ground_truth(noise_count=5)
+    assert a["subject_doc_ids"] == b["subject_doc_ids"]
+    every_id = [i for k, v in a.items() if k.endswith("_doc_ids") for i in v]
+    assert len(set(every_id)) == len(every_id)
+
+
+def test_split_ground_truth_withholds_key_from_output(tmp_path):
+    path = tmp_path / "gt.json"
+    result = {"index": "x", "ground_truth": seed_demo.build_ground_truth(5)}
+    out = seed_demo.split_ground_truth(result, str(path))
+    assert "ground_truth" not in out
+    assert out["ground_truth_file"] == str(path)
+    assert json.loads(path.read_text())["subject_doc_ids"]
+
+
+def test_split_ground_truth_reveal_is_opt_in(tmp_path):
+    result = {"ground_truth": seed_demo.build_ground_truth(5)}
+    out = seed_demo.split_ground_truth(result, str(tmp_path / "gt.json"), reveal=True)
+    assert out["ground_truth"]["subject_doc_ids"]
+
+
+def test_seeded_docs_use_the_opaque_ids():
+    gt = seed_demo.build_ground_truth(noise_count=3)
+    ids = [doc_id for doc_id, _ in seed_demo._all_docs(noise_count=3)]
+    assert set(gt["subject_doc_ids"]).issubset(ids)
+    assert len(ids) == len(seed_demo.SUBJECT_DOCS) + len(seed_demo.DIRECT_DOCS) \
+        + len(seed_demo.DECOY_DOCS) + 3

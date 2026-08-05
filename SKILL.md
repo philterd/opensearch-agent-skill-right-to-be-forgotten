@@ -85,7 +85,14 @@ uv run python scripts/forget_me.py setup
 
 > **Demo:** to create the synthetic story dataset, run
 > `uv run python scripts/forget_me.py seed-demo`. It prints a
-> `suggested_profile` and the ground-truth subject document ids.
+> `suggested_profile`, `suggested_keywords`, and `suggested_identifiers` — the
+> inputs a real erasure request would supply. The corpus also has a known answer
+> key, but `seed-demo` withholds it from the output and writes it to
+> `gdpr-eval/demo-ground-truth.json`, and document ids are opaque so they carry
+> no label. **Do not read that file** (or pass `--reveal-ground-truth`) while
+> working a demo request: it lists which documents identify the subject, which
+> is exactly what your Phase 2 judgment is supposed to determine, and reading it
+> makes the run worthless as a check of whether the skill works.
 >
 > **Real data:** `uv run python scripts/forget_me.py seed-enron` loads a subset
 > of the Enron email corpus into `mail-enron`, streamed from CMU at run time

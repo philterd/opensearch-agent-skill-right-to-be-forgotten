@@ -296,6 +296,12 @@ The Enron data lives only in the container, so removing it removes the data.
 ground truth recorded in `scripts/seed_demo.py`. It demonstrates indirect
 identification more crisply than Enron does, and it works with no network.
 
+Document ids are opaque digests and the answer key is written to
+`gdpr-eval/demo-ground-truth.json` rather than printed, so an agent working the
+request cannot read the labels off the candidates it is judging. Pass
+`--reveal-ground-truth` when you want to inspect the corpus yourself, but not on
+a run you intend to score.
+
 ```bash
 uv run python scripts/forget_me.py seed-demo
 
