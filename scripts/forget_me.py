@@ -22,6 +22,8 @@ Commands:
     verify-chain   Verify the local certificates' tamper-evident hash chain
     audit-log      Show recent erasure certificates
     roster         Evaluation only: extract a roster from mail-enron headers
+    mask-corpus    Evaluation only: mask a subject out of mail-enron into a new index
+    audit-mask     Evaluation only: re-run the leakage gate against the masked index
 
 Data flow: `discover` emits candidates as JSON -> the host agent evaluates each
 using the judgment prompt in SKILL.md -> agent passes evaluations to `plan` /
@@ -297,6 +299,79 @@ def cmd_roster(args):
     })
 
 
+def _load_roster_entries(path):
+    from lib import roster
+    path = path or roster.ROSTER_PATH
+    if not os.path.exists(path):
+        _fail(f"No roster at '{path}'. Run `roster` first.")
+    with open(path, encoding="utf-8") as fh:
+        return json.load(fh).get("entries", [])
+
+
+def cmd_mask_corpus(args):
+    from lib.client import create_client
+    from lib import corpus, masking
+    client = create_client(bootstrap=False)
+
+    entries = _load_roster_entries(args.roster)
+    if not any(e["id"] == args.subject for e in entries):
+        _fail(f"Subject '{args.subject}' is not in the roster.")
+    aliases = masking.alias_set(entries, args.subject, min_length=args.min_variant_length)
+
+    positives, stats = corpus.build_masked_corpus(
+        client, aliases,
+        source_index=args.source_index,
+        masked_index=args.masked_index,
+        text_field=args.text_field,
+        embedding_field=args.embedding_field,
+        setup_neural=not args.no_neural,
+    )
+    audit_report = corpus.audit_masked_index(
+        client, aliases, index=args.masked_index,
+        phone_policy=args.phone_policy, text_field=args.text_field)
+    verification = corpus.verify_positives(
+        client, aliases, positives, source_index=args.source_index,
+        text_field=args.text_field)
+
+    path = corpus.write_labels(args.labels_out or masking.LABELS_PATH, aliases,
+                               positives, stats, audit_report, args.phone_policy)
+
+    # Aggregates only: the positives are what the agent's judgment is meant to
+    # determine, and the alias variants are the subject's own name.
+    summary = {
+        "ok": audit_report["passed"],
+        "labels_file": path,
+        "stats": stats,
+        "alias_variant_count": len(aliases["variants"]),
+        "positive_count": len(positives),
+        "positive_verification": verification,
+        "audit": audit_report,
+        "note": (
+            "Labels withheld from this output and written to the file above. Masking "
+            "manufactures the indirect case, so results from this corpus are a proxy "
+            "for naturally occurring indirect reference, not a sample of it."
+        ),
+    }
+    if not audit_report["passed"]:
+        _out({**summary, "error": "Leakage audit failed; this corpus cannot produce a score."})
+        sys.exit(1)
+    _out(summary)
+
+
+def cmd_audit_mask(args):
+    from lib.client import create_client
+    from lib import corpus, masking
+    client = create_client(bootstrap=False)
+    labels = corpus.load_labels(args.labels or masking.LABELS_PATH)
+    report = corpus.audit_masked_index(
+        client, labels["aliases"], index=args.masked_index or labels["masked_index"],
+        phone_policy=args.phone_policy or labels.get("phone_policy", "identification"),
+        text_field=labels.get("text_field", "message"))
+    _out({"ok": report["passed"], "masked_index": labels["masked_index"], "audit": report})
+    if not report["passed"]:
+        sys.exit(1)
+
+
 def _parse_list(value):
     if not value:
         return []
@@ -424,6 +499,35 @@ def build_parser():
     sp.add_argument("--top-correspondents", type=int, default=5,
                     help="Correspondents recorded per person (default 5)")
     sp.set_defaults(func=cmd_roster)
+
+    sp = sub.add_parser("mask-corpus", help="Evaluation only: not part of the erasure workflow")
+    sp.add_argument("--subject", required=True,
+                    help="Roster id (email address) of the person to mask out")
+    sp.add_argument("--roster", default=None,
+                    help="Roster file (default gdpr-eval/enron-roster.json)")
+    sp.add_argument("--source-index", default="mail-enron")
+    sp.add_argument("--masked-index", default="mail-enron-masked")
+    sp.add_argument("--labels-out", default=None,
+                    help="Where to write the answer key (default gdpr-eval/enron-labels.json)")
+    sp.add_argument("--phone-policy", default="identification",
+                    choices=["identification", "leakage"],
+                    help="Whether surviving phone numbers count as identification "
+                         "(default) or as leakage that fails the run")
+    sp.add_argument("--min-variant-length", type=int, default=3,
+                    help="Shortest alias variant to mask (default 3)")
+    sp.add_argument("--no-neural", action="store_true",
+                    help="Build the masked index without deploying the embedding model")
+    add_field_opts(sp)
+    sp.set_defaults(func=cmd_mask_corpus)
+
+    sp = sub.add_parser("audit-mask", help="Evaluation only: not part of the erasure workflow")
+    sp.add_argument("--labels", default=None,
+                    help="Label file (default gdpr-eval/enron-labels.json)")
+    sp.add_argument("--masked-index", default=None,
+                    help="Override the index recorded in the label file")
+    sp.add_argument("--phone-policy", default=None,
+                    choices=["identification", "leakage"])
+    sp.set_defaults(func=cmd_audit_mask)
 
     return p
 
