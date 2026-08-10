@@ -94,6 +94,24 @@ discovery searches stays held out of the label source. The roster names real
 people, so it is written to `gdpr-eval/` (gitignored) and only aggregate metrics
 are printed.
 
+`mask-corpus` implements the second stage. For one subject it builds an alias
+set (full name, surname, given name, initials, login forms, every address that
+person used), removes every variant from the searched text, and writes the
+result to a separate index under opaque ids. `mail-enron` is left untouched, and
+only the masked text and its timestamp are carried across, so no header or
+mailbox name reaches a search over the masked copy. The positives, meaning the
+documents that contained a variant before it was removed, go to a label file on
+disk rather than to the output.
+
+Masking is then audited, and the audit is a gate rather than a warning: if one
+variant survives, the document is still trivially retrievable and every number
+computed from it would be fiction, so the run exits non-zero and the label set
+is marked unscorable. `audit-mask` re-runs that check on its own. Note that
+masking manufactures the indirect case, since a sentence written without a name
+would have been phrased differently from one with the name removed. Results from
+this corpus are a proxy for naturally occurring indirect reference, not a sample
+of it.
+
 `seed-enron` is the realism check: nothing in it was written to be
 found. Role-reference language appears in only around 1% of Enron messages, and
 most instances describe a generic role or name the person elsewhere in the same

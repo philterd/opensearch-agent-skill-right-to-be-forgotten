@@ -323,5 +323,7 @@ Always summarize each run as:
 | `verify-chain` | Check the local certificate hash chain is intact |
 | `audit-log` | Show recent erasure certificates |
 | `roster` | Evaluation tooling, not part of the erasure workflow: extract a roster from `mail-enron` headers and report attribute coverage (see `EVALUATION.md`) |
+| `mask-corpus` | Evaluation tooling: mask one subject's alias variants out of `mail-enron` into a separate index, write the answer key to disk, and run the leakage gate |
+| `audit-mask` | Evaluation tooling: re-run the leakage gate against an existing masked index |
 
 See `knowledge/` for GDPR references and the theory of indirect identification.
