@@ -330,5 +330,3 @@ own corpus, plus documented failure modes, not a headline score.
 - `knowledge/gdpr-reference.md` for the Recital 26 text behind the uniqueness
   criterion.
 - `scripts/seed_demo.py` for the synthetic corpus and its labels.
-</content>
-</invoke>
