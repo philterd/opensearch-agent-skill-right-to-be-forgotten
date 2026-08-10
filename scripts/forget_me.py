@@ -21,6 +21,7 @@ Commands:
     export-curl    Phase 4: write reviewable curl commands + a local erasure certificate
     verify-chain   Verify the local certificates' tamper-evident hash chain
     audit-log      Show recent erasure certificates
+    roster         Evaluation only: extract a roster from mail-enron headers
 
 Data flow: `discover` emits candidates as JSON -> the host agent evaluates each
 using the judgment prompt in SKILL.md -> agent passes evaluations to `plan` /
@@ -265,6 +266,37 @@ def cmd_audit_log(args):
     _out({"ok": True, **list_entries(args.audit_dir, limit=args.size)})
 
 
+def cmd_roster(args):
+    from lib.client import create_client
+    from lib import roster
+    client = create_client(bootstrap=False)
+    if not client.indices.exists(index=args.index):
+        _fail(f"Index '{args.index}' does not exist. Run seed-enron first.")
+    entries, coverage, decision = roster.build(
+        client,
+        index=args.index,
+        min_messages=args.min_messages,
+        min_subjects=args.min_subjects,
+        top_correspondents=args.top_correspondents,
+    )
+    path = roster.write_roster(entries, coverage, decision,
+                               path=args.out or roster.ROSTER_PATH)
+    # Aggregates only. The roster itself names real people and stays on disk.
+    _out({
+        "ok": True,
+        "index": args.index,
+        "roster_file": path,
+        "coverage": coverage,
+        "decision": decision,
+        "note": (
+            "Roster withheld from this output and written to the file above; it names "
+            "real people. Stage one of EVALUATION.md: the decision above records "
+            "whether the available attributes can support the masking and scoring "
+            "stages."
+        ),
+    })
+
+
 def _parse_list(value):
     if not value:
         return []
@@ -380,6 +412,18 @@ def build_parser():
     sp.add_argument("--size", type=int, default=20)
     sp.add_argument("--audit-dir", default=None)
     sp.set_defaults(func=cmd_audit_log)
+
+    sp = sub.add_parser("roster", help="Evaluation only: not part of the erasure workflow")
+    sp.add_argument("--index", default="mail-enron")
+    sp.add_argument("--out", default=None,
+                    help="Where to write the roster (default gdpr-eval/enron-roster.json)")
+    sp.add_argument("--min-messages", type=int, default=20,
+                    help="Messages a subject needs to be usable for evaluation (default 20)")
+    sp.add_argument("--min-subjects", type=int, default=5,
+                    help="Usable subjects required for a 'go' decision (default 5)")
+    sp.add_argument("--top-correspondents", type=int, default=5,
+                    help="Correspondents recorded per person (default 5)")
+    sp.set_defaults(func=cmd_roster)
 
     return p
 

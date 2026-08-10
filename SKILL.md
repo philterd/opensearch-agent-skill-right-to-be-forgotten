@@ -322,5 +322,6 @@ Always summarize each run as:
 | `export-curl` | Phase 4: write reviewable curl commands + a local erasure certificate |
 | `verify-chain` | Check the local certificate hash chain is intact |
 | `audit-log` | Show recent erasure certificates |
+| `roster` | Evaluation tooling, not part of the erasure workflow: extract a roster from `mail-enron` headers and report attribute coverage (see `EVALUATION.md`) |
 
 See `knowledge/` for GDPR references and the theory of indirect identification.

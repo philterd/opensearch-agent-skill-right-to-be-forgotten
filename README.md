@@ -85,7 +85,16 @@ Building ground truth for *indirect* matches is the hard part, since whether a
 name-free description identifies someone depends on facts the index does not
 contain. [`EVALUATION.md`](EVALUATION.md) sets out a method that derives labels
 from data the corpus already holds, how it applies to Enron, and what the
-resulting numbers do and do not mean. `seed-enron` is the realism check: nothing in it was written to be
+resulting numbers do and do not mean. The `roster` command implements its first
+stage against `mail-enron`: it sweeps the `from`, `to`, and `cc` headers into a
+per-person record of address, display-name variants, active window, and message
+count, then reports coverage and records whether the available attributes can
+support the later stages. It reads only headers, never `message`, so the field
+discovery searches stays held out of the label source. The roster names real
+people, so it is written to `gdpr-eval/` (gitignored) and only aggregate metrics
+are printed.
+
+`seed-enron` is the realism check: nothing in it was written to be
 found. Role-reference language appears in only around 1% of Enron messages, and
 most instances describe a generic role or name the person elsewhere in the same
 message, so `seed-demo` remains the clearer demonstration of *indirect*
