@@ -41,7 +41,10 @@ Windsurf, Gemini CLI, Codex) into a privacy-engineering agent that:
 2. **Disambiguates** each candidate by reasoning about whether it uniquely
    identifies the subject, scoring confidence and extracting exact identifying
    snippets. A `precision_mode` threshold controls precision versus recall.
-3. **Previews** the exact documents and DSL before anything is written.
+3. **Previews** the exact documents and DSL before anything is written. The
+   default leans to recall (`high_recall`, threshold 0.60), because leaving
+   someone in the index after an erasure request is the worse failure and every
+   run is reviewed by a human before anything changes.
 4. **Remediates** with `redact_in_place` (replace only the identifying snippets
    with `[GDPR_REDACTED]`, preserving the rest of the record) or `hard_delete`.
 5. **Verifies**: the generated script carries read-back commands.
@@ -67,6 +70,23 @@ Then ask your agent, for example:
 > "We got a GDPR erasure request. Scrub the senior frontend engineer who owned
 > Checkout, was sole on-call during incident #4091, and resigned end of March
 > 2024, from `logs-application-*`. Redact, don't delete."
+
+## Is the indirect pass worth running on your data?
+
+The direct pass works wherever identifiers appear literally. The indirect pass
+only earns its keep where documents *describe* people, and corpora differ by two
+orders of magnitude in whether they do. `assess` samples an index and says which
+it is, before you trust a result rather than after:
+
+```bash
+uv run python scripts/forget_me.py assess --index "logs-application-*"
+```
+
+It reports descriptive references per document against corpora we measured (21.0
+in US court opinions, 0.20 in Enron email), how many of those sit in running
+prose rather than recipient lists, and whether any field could serve to check an
+answer against. A role noun is not a description, so it prints the phrases it
+matched: read those before trusting the band.
 
 ## Datasets
 
@@ -179,6 +199,9 @@ employees". Erasure requests against this dataset are not hypothetical.
 | `OPENSEARCH_HOST` / `OPENSEARCH_PORT` | `localhost` / `9200` | Cluster endpoint |
 | `OPENSEARCH_URL` | `http://<host>:<port>` | Endpoint baked into the exported curl script |
 | `OPENSEARCH_AUTH_MODE` | `default` | `default`, `none`, or `custom` |
+| `GDPR_HYBRID_FUSION` | `rrf` | How BM25 and neural results combine: `rrf` or `normalization`. Measured: normalization let a weak neural clause reorder good lexical hits downward |
+| `GDPR_RRF_RANK_CONSTANT` | `60` | RRF rank constant. Measured: 10, 20 and 60 differ by under half a point |
+| `GDPR_HYBRID_WEIGHTS` | `0.5,0.5` | Lexical/semantic weights. Applies to `normalization` only; RRF ranks rather than scores |
 | `OPENSEARCH_JAVA_OPTS` | `-Xms3g -Xmx3g` | JVM heap for the bootstrapped local container. Below 3Gb, deploying the embedding model pushes heap past the ML Commons circuit breaker and neural search fails. Ignored when you bring your own cluster |
 | `OPENSEARCH_USER` / `OPENSEARCH_PASSWORD` | none | Used when auth mode is `custom` |
 | `GDPR_AUDIT_DIR` | `gdpr-audit` | Where erasure certificates are written |

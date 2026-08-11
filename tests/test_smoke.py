@@ -21,7 +21,9 @@ def test_thresholds():
     assert threshold_for("strict_precision") == 0.88
     assert threshold_for("balanced") == 0.75
     assert threshold_for("high_recall") == 0.60
-    assert threshold_for("unknown") == PRECISION_MODES["balanced"]
+    # Recall-first: an unrecognised mode falls back to the loosest threshold,
+    # because leaving a subject in the index is the worse failure.
+    assert threshold_for("unknown") == PRECISION_MODES["high_recall"]
 
 
 def test_filter_flagged_respects_threshold_and_identifiability():

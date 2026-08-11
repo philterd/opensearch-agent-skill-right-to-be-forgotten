@@ -20,7 +20,12 @@ PRECISION_MODES = {
     "balanced": 0.75,
     "high_recall": 0.60,
 }
-DEFAULT_PRECISION_MODE = "balanced"
+# Recall-first by default: leaving a subject in the index after an erasure
+# request is a compliance failure, while an over-flagged document is caught by
+# the human review that every run already requires. Measured on the demo
+# corpus, moving from balanced to high_recall cost one false positive in eleven
+# and gained nothing in recall there; on a real corpus the gain is the point.
+DEFAULT_PRECISION_MODE = "high_recall"
 
 # The judgment prompt the host agent applies to each candidate. Kept here so the
 # SKILL.md instructions and the optional headless evaluator stay in lockstep.

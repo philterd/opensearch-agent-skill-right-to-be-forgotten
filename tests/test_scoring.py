@@ -357,3 +357,91 @@ def test_per_category_follows_the_threshold():
     evals = [_judged("x1", 0.80)]
     assert scoring.per_category(evals, TRUTH, 0.75)["wrong_team"]["wrongly_flagged"] == 1
     assert scoring.per_category(evals, TRUTH, 0.88)["wrong_team"]["wrongly_flagged"] == 0
+
+
+# --- scoring across subjects, for one-document-per-person corpora ------------ #
+
+def test_hit_rate_counts_subjects_not_documents():
+    trials = [(["a", "b", "c"], "b"), (["x", "y"], "z"), (["p", "q"], "p")]
+    out = scoring.hit_rate_at_k(trials, ks=(1, 3))
+    assert out["hit_rate@1"]["hits"] == 1        # only the third ranks first
+    assert out["hit_rate@3"]["hits"] == 2        # third misses entirely
+    assert out["hit_rate@3"]["of"] == 3
+
+
+def test_hit_rate_carries_an_interval_that_tightens_with_subjects():
+    few = scoring.hit_rate_at_k([(["a"], "a")] * 10 + [(["b"], "z")] * 10, ks=(1,))
+    many = scoring.hit_rate_at_k([(["a"], "a")] * 500 + [(["b"], "z")] * 500, ks=(1,))
+    assert few["hit_rate@1"]["percent"] == many["hit_rate@1"]["percent"] == 50.0
+    width = lambda o: o["hit_rate@1"]["ci95"][1] - o["hit_rate@1"]["ci95"][0]
+    assert width(many) < width(few) / 4
+
+
+def test_hit_rate_with_no_subjects_does_not_divide_by_zero():
+    assert scoring.hit_rate_at_k([], ks=(10,))["hit_rate@10"]["percent"] == 0.0
+
+
+def test_mean_reciprocal_rank_rewards_ranking_first():
+    assert scoring.mean_reciprocal_rank([(["a", "b"], "a")]) == 1.0
+    assert scoring.mean_reciprocal_rank([(["a", "b"], "b")]) == 0.5
+    assert scoring.mean_reciprocal_rank([(["a", "b"], "z")]) == 0.0
+    assert scoring.mean_reciprocal_rank([]) == 0.0
+
+
+def test_usable_terms_drops_figures_and_docket_numbers():
+    terms = ["7,570.55", "2541", "sunnyvale", "$1,200", "12/31", "lobingier"]
+    assert scoring.usable_terms(terms, {"variants": []}) == ["sunnyvale", "lobingier"]
+
+
+# --- the ablation must look across k, not only at it ------------------------- #
+
+def _hit_run(mode, by_k, of=300):
+    return {"mode": mode,
+            "hit_rate": {f"hit_rate@{k}": {"percent": p, "of": of} for k, p in by_k.items()}}
+
+
+def test_convergence_at_top_k_no_longer_reads_as_no_difference():
+    """The measured case-law shape: level at k=50, sixfold apart at k=1."""
+    runs = [_hit_run("hybrid", {1: 4.0, 10: 9.0, 50: 42.0}),
+            _hit_run("bm25_only", {1: 26.7, 10: 40.0, 50: 42.7})]
+    out = scoring.compare_modes(runs, "hit_rate@50")
+    # Widest at k=10 (31.0 points), not k=1 (22.7): it finds the real maximum.
+    assert out["widest_gap_at"] == "hit_rate@10"
+    assert out["widest_gap_points"] == -31.0
+    assert "differ most at hit_rate@10" in out["verdict"]
+    assert "burying the answer rather than missing it" in out["verdict"]
+    assert "does not support the claim" not in out["verdict"]
+
+
+def test_a_genuinely_flat_comparison_still_reads_as_noise():
+    runs = [_hit_run("hybrid", {1: 20.0, 50: 42.0}),
+            _hit_run("bm25_only", {1: 20.5, 50: 42.7})]
+    out = scoring.compare_modes(runs, "hit_rate@50")
+    assert out["widest_gap_at"] == "hit_rate@50"
+    assert "does not support the claim" in out["verdict"]
+
+
+def test_a_consistent_gap_is_not_reported_as_a_shape_difference():
+    runs = [_hit_run("hybrid", {1: 5.0, 50: 13.0}),
+            _hit_run("bm25_only", {1: 8.0, 50: 20.5})]
+    out = scoring.compare_modes(runs, "hit_rate@50")
+    assert "BM25-only beat hybrid" in out["verdict"]
+    assert "burying the answer" not in out["verdict"]
+
+
+def test_the_older_recall_shaped_runs_still_work():
+    runs = [_run("hybrid", 18.4), _run("bm25_only", 31.6)]
+    out = scoring.compare_modes(runs, "recall@500")
+    assert out["gap_points"] == -13.2
+    assert "BM25-only beat hybrid" in out["verdict"]
+
+
+def test_a_lead_that_changes_with_depth_is_called_a_crossover():
+    """RRF measured: hybrid wins at k=50, BM25 wins at k=1."""
+    runs = [_hit_run("hybrid", {1: 7.3, 50: 49.7}),
+            _hit_run("bm25_only", {1: 26.7, 50: 42.7})]
+    out = scoring.compare_modes(runs, "hit_rate@50")
+    assert "Hybrid beat BM25-only" in out["verdict"]
+    assert "lead changes with depth" in out["verdict"]
+    assert "burying" not in out["verdict"]
+    assert "converge" not in out["verdict"]

@@ -79,25 +79,70 @@ def recall_at_k(ranked_ids, positive_ids, ks=DEFAULT_KS):
     return out
 
 
-def significant_terms(client, index, doc_ids, size=30, field="message"):
-    """Terms distinctive to a set of documents against the corpus background."""
+def hit_rate_at_k(trials, ks=DEFAULT_KS):
+    """Share of subjects whose held-out document is retrieved within k.
+
+    Where a corpus gives one document per person, recall within a subject is 0%
+    or 100% and says nothing. Scoring across subjects instead turns n=1 with a
+    ten-point interval into n=hundreds with a two-point one.
+
+    ``trials`` is [(ranked_ids, target_id)].
+    """
+    out = {}
+    total = len(trials)
+    for k in ks:
+        hits = sum(1 for ranked, target in trials if target in ranked[:k])
+        low, high = wilson_interval(hits, total)
+        out[f"hit_rate@{k}"] = {
+            "hits": hits, "of": total,
+            "percent": round(100.0 * hits / total, 1) if total else 0.0,
+            "ci95": [low, high],
+        }
+    return out
+
+
+def mean_reciprocal_rank(trials):
+    """Rewards ranking the right document first, not merely inside k."""
+    if not trials:
+        return 0.0
+    total = 0.0
+    for ranked, target in trials:
+        if target in ranked:
+            total += 1.0 / (ranked.index(target) + 1)
+    return round(total / len(trials), 4)
+
+
+def significant_terms(client, index, doc_ids, size=30, field="message",
+                      min_doc_count=3, filter_duplicate_text=True):
+    """Terms distinctive to a set of documents against the corpus background.
+
+    A single-document foreground needs min_doc_count=1 and no duplicate
+    filtering, or the aggregation returns nothing at all.
+    """
     resp = client.search(index=index, body={
         "size": 0,
         "query": {"ids": {"values": list(doc_ids)}},
         "aggs": {"sig": {"significant_text": {
-            "field": field, "size": size, "filter_duplicate_text": True}}},
+            "field": field, "size": size, "min_doc_count": min_doc_count,
+            "filter_duplicate_text": filter_duplicate_text}}},
     })
     return [b["key"] for b in resp["aggregations"]["sig"]["buckets"]]
 
 
+_NUMERIC = re.compile(r"^[\d.,$%/-]+$")
+
+
 def usable_terms(terms, aliases, min_length=MIN_TERM_LENGTH):
-    """Drop anything that is the subject's own name, or too short to mean much.
+    """Drop the subject's own name, tokens too short to mean much, and figures.
 
     A term matching an alias variant would put the answer back into the query.
+    Dollar amounts and docket numbers are distinctive but describe a case, not
+    a person.
     """
     banned = {v.lower() for v in (aliases or {}).get("variants", [])}
     banned |= {p.lower() for v in banned for p in v.replace("@", " ").replace(".", " ").split()}
-    return [t for t in terms if len(t) >= min_length and t.lower() not in banned]
+    return [t for t in terms
+            if len(t) >= min_length and t.lower() not in banned and not _NUMERIC.match(t)]
 
 
 _WORDINGS = (
@@ -125,26 +170,48 @@ def build_profiles(terms, wordings=_WORDINGS, per_profile=5):
 
 
 def compare_modes(runs, top_key, margin=1.0):
-    """Say in words which retrieval mode won.
+    """Say in words which retrieval mode won, looking across k, not only at it.
 
     The skill's mechanism claim is that hybrid surfaces what BM25 misses. A
     table the reader has to interpret does not test that.
+
+    Comparing only the largest k hides the case that matters most: two modes
+    that find the same documents but order them differently converge by k=50
+    while differing sixfold at k=1. Measured on 300 case-law subjects, BM25 put
+    the right document first 26.7% of the time against hybrid's 4.0%, and the
+    two were level at k=50.
     """
-    best = {}
+    def best(mode, key):
+        values = [r[_metric(r)][key]["percent"] for r in runs if r["mode"] == mode
+                  and key in r[_metric(r)]]
+        return max(values) if values else 0.0
+
+    keys = []
     for run in runs:
-        pct = run["recall_descriptive"][top_key]["percent"]
-        best[run["mode"]] = max(best.get(run["mode"], 0.0), pct)
-    hybrid, bm25 = best.get("hybrid", 0.0), best.get("bm25_only", 0.0)
+        for key in run[_metric(run)]:
+            if key not in keys:
+                keys.append(key)
+    keys.sort(key=_k_of)
+
+    hybrid, bm25 = best("hybrid", top_key), best("bm25_only", top_key)
     gap = round(hybrid - bm25, 1)
-    totals = {r["recall_descriptive"][top_key]["of"] for r in runs}
+
+    # The widest gap at any k, which is what a shape difference shows up as.
+    widest_key, widest_gap = top_key, gap
+    for key in keys:
+        delta = round(best("hybrid", key) - best("bm25_only", key), 1)
+        if abs(delta) > abs(widest_gap):
+            widest_key, widest_gap = key, delta
+
+    totals = {r[_metric(r)][top_key]["of"] for r in runs if top_key in r[_metric(r)]}
     total = totals.pop() if len(totals) == 1 else 0
     hits = {m: round(pct * total / 100) for m, pct in
             (("hybrid", hybrid), ("bm25_only", bm25))}
     disjoint = separable(hits["hybrid"], hits["bm25_only"], total)
+
     if abs(gap) < margin:
         verdict = (f"Hybrid and BM25-only are within noise at {top_key} "
-                   f"({hybrid}% against {bm25}%). This run does not support the claim "
-                   f"that hybrid retrieval surfaces documents BM25-only misses.")
+                   f"({hybrid}% against {bm25}%).")
     elif gap > 0:
         verdict = (f"Hybrid beat BM25-only at {top_key} by {gap} points "
                    f"({hybrid}% against {bm25}%).")
@@ -152,17 +219,49 @@ def compare_modes(runs, top_key, margin=1.0):
         verdict = (f"BM25-only beat hybrid at {top_key} by {abs(gap)} points "
                    f"({bm25}% against {hybrid}%). The skill's mechanism claim, that "
                    f"hybrid surfaces documents BM25-only misses, is contradicted here.")
-    verdict += (" Generated profiles are term bags of rare proper nouns, which "
-                "favour exact lexical matching and give a sentence embedding little "
-                "to work with, so this compares the two modes on that query style "
-                "rather than on fluent prose.")
+
+    if widest_key != top_key and abs(widest_gap) >= abs(gap) + margin:
+        winner = "BM25-only" if widest_gap < 0 else "hybrid"
+        loser = "hybrid" if widest_gap < 0 else "BM25-only"
+        crossover = gap != 0 and (gap > 0) != (widest_gap > 0)
+        if crossover:
+            verdict += (f" The lead changes with depth: {winner} is ahead by "
+                        f"{abs(widest_gap)} points at {widest_key}. Use the shallow "
+                        f"result when precision at the top matters and the deep one "
+                        f"when coverage does.")
+        else:
+            verdict += (f" They converge at {top_key} but differ most at {widest_key}, "
+                        f"where {winner} leads by {abs(widest_gap)} points. The two "
+                        f"modes are finding the same documents and ranking them "
+                        f"differently, so {loser} is burying the answer rather than "
+                        f"missing it.")
+    elif abs(gap) < margin:
+        verdict += (" This run does not support the claim that hybrid retrieval "
+                    "surfaces documents BM25-only misses.")
+
+    verdict += (" Generated profiles are term bags of rare proper nouns, which favour "
+                "exact lexical matching and give a sentence embedding little to work "
+                "with, so this compares the two modes on that query style rather than "
+                "on fluent prose.")
     if not disjoint and abs(gap) >= margin:
         verdict += (f" On {total} positives the two intervals still overlap, so the "
                     f"direction is evidence but the size is not settled; confirm on "
                     f"further subjects before acting on the magnitude.")
     return {"best_hybrid_percent": hybrid, "best_bm25_only_percent": bm25,
             "gap_points": gap, "positives": total,
+            "widest_gap_at": widest_key, "widest_gap_points": widest_gap,
             "intervals_disjoint": disjoint, "verdict": verdict}
+
+
+def _metric(run):
+    return "hit_rate" if "hit_rate" in run else "recall_descriptive"
+
+
+def _k_of(key):
+    try:
+        return int(key.split("@")[1])
+    except (IndexError, ValueError):
+        return 0
 
 
 INTERPRETATION = (

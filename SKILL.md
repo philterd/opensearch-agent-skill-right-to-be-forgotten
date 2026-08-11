@@ -60,7 +60,10 @@ Collect these from the user (ask for anything missing):
 2. **`index_pattern`** — the OpenSearch index/indices to search (e.g.
    `logs-application-*`, `traces-*`).
 3. **`precision_mode`** — `strict_precision` | `balanced` | `high_recall`
-   (default `balanced`).
+   (default `high_recall`). Recall-first by default: leaving someone in the
+   index after an erasure request is a compliance failure, while an
+   over-flagged document is caught by the review step every run requires.
+   Raise the mode when over-redaction would damage records that matter.
 4. **`action_type`** — `redact_in_place` | `hard_delete` (default
    `redact_in_place`). Always preview with `plan` first (it writes nothing),
    then generate the curl script with `export-curl`.
@@ -198,8 +201,8 @@ Precision-mode thresholds (a document is flagged only if `is_identifiable` **and
 | precision_mode      | threshold | guidance                                                          |
 |---------------------|-----------|-------------------------------------------------------------------|
 | `strict_precision`  | >= 0.88   | Flag only with 2 or more distinct markers that fit the target and no one else. |
-| `balanced` (default)| >= 0.75   | Flag when role/incident/timeline together most likely point to the target. |
-| `high_recall`       | >= 0.60   | Flag on any descriptive characteristic plausibly tied to the target (bias to compliance). |
+| `balanced`          | >= 0.75   | Flag when role/incident/timeline together most likely point to the target. |
+| `high_recall` (default) | >= 0.60 | Flag on any descriptive characteristic plausibly tied to the target (bias to compliance). |
 
 > Optional headless mode: if `GDPR_LLM_BASE_URL` (an OpenAI-compatible endpoint)
 > is set, you may instead run `forget_me.py evaluate --candidates @candidates.json
@@ -299,7 +302,10 @@ Always summarize each run as:
    script (`export-curl`); the human runs it. Always show a `plan` and the
    generated script, and let the user decide.
 2. **Redaction over deletion** unless the user asks otherwise — it satisfies
-   erasure while preserving operational integrity.
+   erasure while preserving operational integrity. This matters more under the
+   recall-first default: a false positive redacts a phrase from someone else's
+   record, which is recoverable, whereas `hard_delete` destroys that record.
+   Confirm explicitly before pairing `high_recall` with `hard_delete`.
 3. **Respect legal holds.** Always ask whether any indices are under a retention
    obligation and pass them via `--legal-hold`; `export-curl` refuses them.
 4. **Never widen scope silently.** Only act on documents the evaluation flagged;
@@ -312,6 +318,7 @@ Always summarize each run as:
 | Command | Purpose |
 |---|---|
 | `status` | Connectivity + whether the embedding model is deployed |
+| `assess` | Whether an index describes people well enough for the indirect pass to have anything to find; reports reference density against measured corpora |
 | `setup` | Bootstrap cluster (if needed) + deploy model & pipelines |
 | `seed-demo` | Load the synthetic demo dataset |
 | `seed-enron` | Load a subset of the real Enron email corpus (fetched from CMU, not redistributed) |

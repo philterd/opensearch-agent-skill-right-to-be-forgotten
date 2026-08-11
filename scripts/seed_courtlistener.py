@@ -169,16 +169,46 @@ def load_captions(path, wanted):
     return captions
 
 
+def alias_variants(caption):
+    """Every form of every personal party in a caption."""
+    from lib import caselaw, masking
+    variants = set()
+    for party in caselaw.parse_caption(caption):
+        if caselaw.is_organisation(party):
+            continue
+        variants.update(masking._name_forms(party))
+    return sorted(v for v in variants if len(v) >= masking.MIN_VARIANT_LENGTH)
+
+
+def split_halves(text):
+    """Halve on a sentence boundary near the middle.
+
+    The profile is derived from one half and the other is the retrieval target,
+    so the query text and the scored text must not overlap.
+    """
+    middle = len(text) // 2
+    cut = text.find(". ", middle)
+    cut = cut + 2 if cut != -1 and cut < len(text) - 200 else middle
+    return text[:cut].strip(), text[cut:].strip()
+
+
 def build_documents(cache_dir, limit=DEFAULT_LIMIT, slice_mb=DEFAULT_SLICE_MB,
-                    max_chars=DEFAULT_MAX_CHARS):
-    """Return (documents, stats). Text and captions stay in separate fields."""
-    from lib import caselaw
+                    max_chars=DEFAULT_MAX_CHARS, mask=True, split=True,
+                    min_half=300):
+    """Return (documents, stats). Text and captions stay in separate fields.
+
+    With ``mask``, every personal party is removed from the text; the caption
+    lives on in its own unindexed field as the label. With ``split``, each
+    opinion becomes two documents sharing a subject id.
+    """
+    from lib import caselaw, masking
 
     opinions_path = fetch_slice(cache_dir, OPINIONS, slice_mb)
     rows = list(iter_opinions(opinions_path, limit=limit, max_chars=max_chars))
     captions = caption_cache(cache_dir, slice_mb)
 
-    documents, no_caption, no_person = [], 0, 0
+    documents = []
+    no_caption = no_person = too_short = leaked = 0
     for cluster_id, opinion_id, text in rows:
         caption, date = captions.get(cluster_id, ("", ""))
         if not caption:
@@ -188,36 +218,67 @@ def build_documents(cache_dir, limit=DEFAULT_LIMIT, slice_mb=DEFAULT_SLICE_MB,
         if not surnames:
             no_person += 1
             continue
-        documents.append((f"cl-{cluster_id}-{opinion_id}", {
-            "@timestamp": f"{date}T00:00:00Z" if re.match(r"^\d{4}-\d\d-\d\d$", date) else None,
-            "message": text,
+
+        body = text
+        if mask:
+            pattern = masking.build_pattern(alias_variants(caption))
+            if pattern is not None:
+                body, _ = masking.mask_text(body, pattern)
+                if masking.find_variants(body, pattern):
+                    leaked += 1
+                    continue
+
+        stamp = f"{date}T00:00:00Z" if re.match(r"^\d{4}-\d\d-\d\d$", date) else None
+        common = {
             # Naming channel. Never merged into `message`, which is what
             # discovery searches.
             "case_name": caption,
             "party_surnames": surnames,
             "party_given_names": caselaw.given_names(caption),
             "cluster_id": cluster_id,
-        }))
+            "subject_id": f"cl-{cluster_id}",
+            "@timestamp": stamp,
+        }
+        if not split:
+            documents.append((f"cl-{cluster_id}-{opinion_id}",
+                              dict(common, message=body, half="whole")))
+            continue
+        first, second = split_halves(body)
+        if min(len(first), len(second)) < min_half:
+            too_short += 1
+            continue
+        documents.append((f"cl-{cluster_id}-a", dict(common, message=first, half="a")))
+        documents.append((f"cl-{cluster_id}-b", dict(common, message=second, half="b")))
+
     return documents, {
         "opinions_with_role_language": len(rows),
+        "subjects": len({src["subject_id"] for _, src in documents}),
         "indexed": len(documents),
         "dropped_no_caption": no_caption,
         "dropped_no_person_party": no_person,
+        "dropped_masking_leaked": leaked,
+        "dropped_half_too_short": too_short,
+        "masked": mask,
+        "split_into_halves": split,
     }
 
 
 def load(client, cache_dir=DEFAULT_CACHE, limit=DEFAULT_LIMIT,
          slice_mb=DEFAULT_SLICE_MB, max_chars=DEFAULT_MAX_CHARS, setup_neural=True,
-         text_field="message", embedding_field="message_embedding", index=CASELAW_INDEX):
+         text_field="message", embedding_field="message_embedding", index=CASELAW_INDEX,
+         mask=True, split=True):
     """(Re)create the case-law index and load role-bearing opinions."""
     from lib.model import setup_neural_search, create_knn_index
 
-    documents, stats = build_documents(cache_dir, limit, slice_mb, max_chars)
+    documents, stats = build_documents(cache_dir, limit, slice_mb, max_chars,
+                                       mask=mask, split=split)
     if client.indices.exists(index=index):
         client.indices.delete(index=index)
 
     extra = {
         "@timestamp": {"type": "date"},
+        "subject_id": {"type": "keyword"},
+        "half": {"type": "keyword"},
         "case_name": {"type": "keyword", "index": False, "doc_values": False},
         "party_surnames": {"type": "keyword"},
         "party_given_names": {"type": "keyword"},
@@ -275,13 +336,18 @@ if __name__ == "__main__":
                     help="Compressed megabytes of the opinions export to cache")
     ap.add_argument("--max-chars", type=int, default=DEFAULT_MAX_CHARS)
     ap.add_argument("--cache-dir", default=DEFAULT_CACHE)
+    ap.add_argument("--no-mask", action="store_true",
+                    help="Leave party names in the text (labels become unusable)")
+    ap.add_argument("--no-split", action="store_true",
+                    help="One document per opinion instead of two halves")
     ap.add_argument("--no-neural", action="store_true")
     ap.add_argument("--dry-run", action="store_true",
                     help="Build documents and print a sample without touching OpenSearch")
     a = ap.parse_args()
 
     if a.dry_run:
-        docs, stats = build_documents(a.cache_dir, a.limit, a.slice_mb, a.max_chars)
+        docs, stats = build_documents(a.cache_dir, a.limit, a.slice_mb, a.max_chars,
+                                      mask=not a.no_mask, split=not a.no_split)
         print(json.dumps({**stats, "sample": [
             {"doc_id": i, "case_name": s["case_name"],
              "party_surnames": s["party_surnames"],
@@ -291,4 +357,5 @@ if __name__ == "__main__":
     from lib.client import create_client
     print(json.dumps(load(create_client(bootstrap=True), cache_dir=a.cache_dir,
                           limit=a.limit, slice_mb=a.slice_mb, max_chars=a.max_chars,
-                          setup_neural=not a.no_neural), indent=2))
+                          setup_neural=not a.no_neural, mask=not a.no_mask,
+                          split=not a.no_split), indent=2))

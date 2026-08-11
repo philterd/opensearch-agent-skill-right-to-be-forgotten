@@ -11,6 +11,7 @@ Run every command with uv (deps are declared inline above):
 
 Commands:
     status         Check OpenSearch connectivity and deployed embedding model
+    assess         Is the indirect pass worth running on this index?
     setup          Bootstrap cluster (if needed) + deploy embedding model & pipelines
     seed-demo      Load the synthetic multi-index demo dataset
     seed-enron     Load a subset of the real Enron email corpus (fetched from CMU)
@@ -27,6 +28,7 @@ Commands:
     subjects       Evaluation only: rank roster subjects the corpus can score
     score-discovery Evaluation only: recall@k for Phase 1, with a BM25 ablation
     score-judgment Evaluation only: score Phase 2 and 3 from an evaluations file
+    score-corpus   Evaluation only: hit-rate across many subjects, one document each
 
 Data flow: `discover` emits candidates as JSON -> the host agent evaluates each
 using the judgment prompt in SKILL.md -> agent passes evaluations to `plan` /
@@ -83,6 +85,24 @@ def cmd_status(args):
         "endpoint": endpoint_label(client),
         "embedding_model_deployed": bool(model_id),
         "model_id": model_id,
+    })
+
+
+def cmd_assess(args):
+    from lib.client import create_client
+    from lib import suitability
+    client = create_client(bootstrap=False)
+    if not client.indices.exists(index=args.index):
+        _fail(f"Index '{args.index}' does not exist.")
+    report = suitability.assess(client, args.index, text_field=args.text_field,
+                                sample=args.sample)
+    _out({
+        "ok": True, **report,
+        "note": (
+            "The direct pass works wherever identifiers appear literally, and is "
+            "unaffected by this. This measures only whether documents describe "
+            "people well enough for the indirect pass to have something to find."
+        ),
     })
 
 
@@ -571,6 +591,71 @@ def cmd_score_judgment(args):
     })
 
 
+def cmd_score_corpus(args):
+    """Score retrieval across subjects, for corpora with one document per person.
+
+    Recall within a subject is 0% or 100% when they have a single document, so
+    it says nothing. This asks, for each of many subjects, whether the held-out
+    half of their record is retrieved from a profile built on the other half.
+    """
+    from lib.client import create_client
+    from lib.discovery import discover
+    from lib.model import find_deployed_model
+    from lib import scoring
+    client = create_client(bootstrap=False)
+    if not client.indices.exists(index=args.index):
+        _fail(f"Index '{args.index}' does not exist. Run seed-courtlistener first.")
+
+    resp = client.search(index=args.index, body={
+        "size": 0, "query": {"term": {"half": "a"}},
+        "aggs": {"s": {"terms": {"field": "subject_id", "size": args.subjects}}}})
+    subject_ids = [b["key"] for b in resp["aggregations"]["s"]["buckets"]]
+    if not subject_ids:
+        _fail(f"No half-'a' documents in '{args.index}'; seed with splitting enabled.")
+
+    model_id = find_deployed_model(client)
+    ks = tuple(int(k) for k in args.ks.split(","))
+    size = max(ks) + 1                      # room to drop the query's own half
+    trials = {"hybrid": [], "bm25_only": []}
+    skipped = 0
+
+    for subject in subject_ids:
+        terms = scoring.usable_terms(
+            scoring.significant_terms(client, args.index, [f"{subject}-a"],
+                                      size=args.terms, min_doc_count=1,
+                                      filter_duplicate_text=False),
+            {"variants": []})[:8]
+        if len(terms) < 3:
+            skipped += 1
+            continue
+        profile = f"Records concerning {', '.join(terms[:5])}."
+        for mode, mid in (("hybrid", model_id), ("bm25_only", None)):
+            candidates, _ = discover(client, index_pattern=args.index, profile=profile,
+                                     keywords=" ".join(terms), model_id=mid, size=size)
+            ranked = [c["doc_id"] for c in candidates if c["doc_id"] != f"{subject}-a"]
+            trials[mode].append((ranked, f"{subject}-b"))
+
+    runs = [{"mode": mode,
+              "hit_rate": scoring.hit_rate_at_k(trials[mode], ks),
+              "mean_reciprocal_rank": scoring.mean_reciprocal_rank(trials[mode])}
+             for mode in ("hybrid", "bm25_only")]
+    top = f"hit_rate@{max(ks)}"
+    _out({
+        "ok": True,
+        "stage": "discover, scored across subjects",
+        "index": args.index,
+        "subjects_scored": len(trials["hybrid"]),
+        "subjects_skipped_too_few_terms": skipped,
+        "runs": runs,
+        "ablation": scoring.compare_modes(runs, top),
+        "measures": (
+            "Whether a profile built from one half of a person's record retrieves the "
+            "other half. Many subjects with one document each, so the interval is tight "
+            "where a single subject's recall would not be."
+        ),
+    })
+
+
 def _parse_list(value):
     if not value:
         return []
@@ -588,6 +673,13 @@ def build_parser():
         sp.add_argument("--embedding-field", default="message_embedding")
 
     sp = sub.add_parser("status"); sp.set_defaults(func=cmd_status)
+
+    sp = sub.add_parser("assess")
+    sp.add_argument("--index", required=True)
+    sp.add_argument("--text-field", default="message")
+    sp.add_argument("--sample", type=int, default=500,
+                    help="Documents to sample (default 500)")
+    sp.set_defaults(func=cmd_assess)
 
     sp = sub.add_parser("setup"); add_field_opts(sp); sp.set_defaults(func=cmd_setup)
 
@@ -624,7 +716,8 @@ def build_parser():
     sp.add_argument("--profile", required=True)
     sp.add_argument("--keywords", default=None,
                     help="Contextual keywords for the BM25 clause (defaults to the profile)")
-    sp.add_argument("--size", type=int, default=50)
+    sp.add_argument("--size", type=int, default=100,
+                    help="Candidates to retrieve (default 100). Recall rises with depth: measured 41.7%% at k=10 against 49.7%% at k=50")
     sp.add_argument("--model-id", default=None)
     sp.add_argument("--timestamp-field", default="@timestamp")
     add_field_opts(sp)
@@ -648,14 +741,14 @@ def build_parser():
     sp = sub.add_parser("evaluate")
     sp.add_argument("--candidates", required=True, help="Inline JSON or @path")
     sp.add_argument("--profile", required=True)
-    sp.add_argument("--precision-mode", default="balanced",
+    sp.add_argument("--precision-mode", default="high_recall",
                     choices=["strict_precision", "balanced", "high_recall"])
     sp.set_defaults(func=cmd_evaluate)
 
     def add_action_opts(sp):
         sp.add_argument("--evaluations", required=True, help="Inline JSON or @path")
         sp.add_argument("--candidates", default=None, help="Inline JSON or @path (enrichment)")
-        sp.add_argument("--precision-mode", default="balanced",
+        sp.add_argument("--precision-mode", default="high_recall",
                         choices=["strict_precision", "balanced", "high_recall"])
         sp.add_argument("--text-field", default="message")
 
@@ -754,6 +847,14 @@ def build_parser():
                     help="Demo answer key (gdpr-eval/demo-ground-truth.json). "
                          "Scores the demo corpus instead of an Enron label set")
     sp.set_defaults(func=cmd_score_judgment)
+
+    sp = sub.add_parser("score-corpus", help="Evaluation only: not part of the erasure workflow")
+    sp.add_argument("--index", default="case-law")
+    sp.add_argument("--subjects", type=int, default=300,
+                    help="Subjects to score (default 300)")
+    sp.add_argument("--ks", default="1,5,10,25,50")
+    sp.add_argument("--terms", type=int, default=20)
+    sp.set_defaults(func=cmd_score_corpus)
 
     sp = sub.add_parser("audit-mask", help="Evaluation only: not part of the erasure workflow")
     sp.add_argument("--labels", default=None,
