@@ -327,6 +327,6 @@ Always summarize each run as:
 | `audit-mask` | Evaluation tooling: re-run the leakage gate against an existing masked index |
 | `subjects` | Evaluation tooling: rank roster subjects by descriptive mentions and screen out surnames that are ordinary words |
 | `score-discovery` | Evaluation tooling: Phase 1 recall@k against the labels, with a BM25 ablation and several profile wordings |
-| `score-judgment` | Evaluation tooling: Phase 2 and 3 metrics from an evaluations file, at every precision threshold |
+| `score-judgment` | Evaluation tooling: Phase 2 and 3 metrics from an evaluations file, at every precision threshold; pass `--ground-truth` to score the demo corpus, which breaks results out per decoy category |
 
 See `knowledge/` for GDPR references and the theory of indirect identification.

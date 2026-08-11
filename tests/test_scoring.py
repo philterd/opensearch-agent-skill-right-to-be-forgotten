@@ -112,9 +112,21 @@ def test_precision_recall_and_false_positive_rate():
     assert out["false_positives_per_1000_documents"] == 0.1
 
 
-def test_precision_recall_handles_an_empty_flagged_set():
+def test_precision_is_none_when_nothing_was_flagged():
+    """0.0 would read as "everything it flagged was wrong"; it flagged nothing."""
     out = scoring.precision_recall(set(), {"a"}, 100)
-    assert out["precision"] == 0.0 and out["recall"] == 0.0
+    assert out["precision"] is None
+    assert out["recall"] == 0.0
+    assert out["flagged"] == 0
+
+
+def test_recall_is_none_when_there_is_nothing_to_find():
+    assert scoring.precision_recall({"a"}, set(), 100)["recall"] is None
+
+
+def test_precision_recall_records_its_denominator():
+    out = scoring.precision_recall({"a"}, {"a", "b"}, 100, "descriptive positives")
+    assert out["recall_measured_against"] == "2 descriptive positives"
 
 
 # --- span metrics ------------------------------------------------------------ #
@@ -300,3 +312,48 @@ def test_verdict_withholds_the_magnitude_when_intervals_overlap():
     assert out["intervals_disjoint"] is False
     assert "not settled" in out["verdict"]
     assert "term bags" in out["verdict"]
+
+
+# --- demo corpus scoring ----------------------------------------------------- #
+
+TRUTH = {
+    "subject_doc_ids": ["s1", "s2"],
+    "direct_doc_ids": ["d1"],
+    "decoy_doc_ids": ["x1", "x2", "x3"],
+    "noise_doc_ids": ["n1"],
+    "counts": {"subject": 2, "direct": 1, "decoy": 3, "noise": 1},
+    "decoy_category_by_doc_id": {"x1": "wrong_team", "x2": "wrong_team",
+                                 "x3": "different_named_person"},
+}
+
+
+def test_demo_positives_are_the_subject_and_direct_documents():
+    assert scoring.demo_positive_ids(TRUTH) == {"s1", "s2", "d1"}
+    assert scoring.demo_positive_ids({}) == set()
+
+
+def _judged(doc_id, confidence):
+    return {"doc_id": doc_id, "is_identifiable": True, "confidence_score": confidence}
+
+
+def test_per_category_reports_the_marker_the_judgment_cannot_tell_apart():
+    evals = [_judged("s1", 0.95), _judged("x1", 0.90), _judged("x2", 0.90),
+             _judged("x3", 0.10)]
+    out = scoring.per_category(evals, TRUTH, 0.75)
+    assert out["wrong_team"] == {"judged": 2, "wrongly_flagged": 2,
+                                 "false_positive_rate": 1.0}
+    assert out["different_named_person"]["wrongly_flagged"] == 0
+    # Worst category first, so the failure mode leads.
+    assert list(out) == ["wrong_team", "different_named_person"]
+
+
+def test_per_category_ignores_decoys_that_were_never_judged():
+    out = scoring.per_category([_judged("x1", 0.9)], TRUTH, 0.75)
+    assert out == {"wrong_team": {"judged": 1, "wrongly_flagged": 1,
+                                  "false_positive_rate": 1.0}}
+
+
+def test_per_category_follows_the_threshold():
+    evals = [_judged("x1", 0.80)]
+    assert scoring.per_category(evals, TRUTH, 0.75)["wrong_team"]["wrongly_flagged"] == 1
+    assert scoring.per_category(evals, TRUTH, 0.88)["wrong_team"]["wrongly_flagged"] == 0

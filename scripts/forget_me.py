@@ -509,29 +509,50 @@ def cmd_score_judgment(args):
     from lib.client import create_client
     from lib import corpus, scoring
     client = create_client(bootstrap=False)
-    labels = corpus.load_labels(args.labels)
-    scoring.guard(labels, args.index)
 
     evaluations = _load_json_arg(args.evaluations)
     if isinstance(evaluations, dict):
         evaluations = evaluations.get("evaluations", [])
-    derive, held = scoring.split_positives(labels["positives"])
-    evaluations = scoring.without(evaluations, {p["doc_id"] for p in derive})
-    if not evaluations:
-        _fail("No judgments left after excluding the derive half.")
 
-    positive_ids = {p["doc_id"] for p in held}
-    _, breakdown = _positive_breakdown(client, labels, held)
+    if args.ground_truth:
+        # Demo corpus: the answer key is a class map, not a masked label set.
+        with open(args.ground_truth, encoding="utf-8") as fh:
+            truth = json.load(fh)
+        labels = {"subject": "demo subject", "masked_index": args.index,
+                  "audit": {"passed": True, "failures": []}, "aliases": {},
+                  "stats": {"documents_scanned": sum(truth["counts"].values())}}
+        positive_ids = scoring.demo_positive_ids(truth)
+        breakdown = {"corpus": "demo", **truth["counts"]}
+        categories = scoring.per_category
+    else:
+        labels = corpus.load_labels(args.labels)
+        scoring.guard(labels, args.index)
+        truth, categories = None, None
+        derive, held = scoring.split_positives(labels["positives"])
+        evaluations = scoring.without(evaluations, {p["doc_id"] for p in derive})
+        # Headline against the descriptive subset, as score-discovery does: the
+        # list-only positives are unretrievable, so scoring against them
+        # understates by construction.
+        descriptive_ids, breakdown = _positive_breakdown(client, labels, held)
+        positive_ids = descriptive_ids
+        raw_ids = {p["doc_id"] for p in held}
+    if not evaluations:
+        _fail("No judgments left to score.")
     scanned = labels["stats"]["documents_scanned"]
     texts = scoring.fetch_texts(client, args.index, [e["doc_id"] for e in evaluations])
 
     by_threshold = {}
     for mode, threshold in scoring.PRECISION_THRESHOLDS.items():
         flagged = scoring.flagged_at(evaluations, threshold)
-        by_threshold[mode] = {
-            "threshold": threshold,
-            **scoring.precision_recall(flagged, positive_ids, scanned),
-        }
+        label = "descriptive positives" if not truth else "positives"
+        row = {"threshold": threshold,
+               **scoring.precision_recall(flagged, positive_ids, scanned, label)}
+        if categories:
+            row["by_decoy_category"] = categories(evaluations, truth, threshold)
+        else:
+            row["against_all_positives"] = scoring.precision_recall(
+                flagged, raw_ids, scanned, "positives including list-only")
+        by_threshold[mode] = row
     _out({
         "ok": True,
         "stages": ["agent judgment + filter_flagged", "identifying_snippets"],
@@ -729,6 +750,9 @@ def build_parser():
     sp = sub.add_parser("score-judgment", help="Evaluation only: not part of the erasure workflow")
     add_score_opts(sp)
     sp.add_argument("--evaluations", required=True, help="Inline JSON or @path")
+    sp.add_argument("--ground-truth", default=None,
+                    help="Demo answer key (gdpr-eval/demo-ground-truth.json). "
+                         "Scores the demo corpus instead of an Enron label set")
     sp.set_defaults(func=cmd_score_judgment)
 
     sp = sub.add_parser("audit-mask", help="Evaluation only: not part of the erasure workflow")

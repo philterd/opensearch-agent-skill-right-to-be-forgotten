@@ -96,6 +96,41 @@ DIRECT_DOCS = [
 ]
 
 # --- Decoys: superficially similar, must NOT be flagged --------------------- #
+# What single marker each decoy varies, so precision can be broken out by the
+# kind of near-miss rather than reported as one number.
+DECOY_CATEGORY = {'dec-1': 'different_named_person',
+    'dec-2': 'wrong_team',
+    'dec-3': 'wrong_seniority',
+    'dec-4': 'no_person',
+    'dec-5': 'no_person',
+    'dec-6': 'unrelated',
+    'dec-7': 'wrong_team',
+    'dec-8': 'different_named_person',
+    'dec-9': 'no_person',
+    'dec-10': 'role_without_markers',
+    'dec-11': 'different_named_person',
+    'dec-12': 'wrong_role',
+    'dec-13': 'wrong_team',
+    'dec-14': 'wrong_time',
+    'dec-15': 'wrong_role',
+    'dec-16': 'no_person',
+    'dec-17': 'no_person',
+    'dec-18': 'different_named_person',
+    'dec-19': 'wrong_role',
+    'dec-20': 'no_person',
+    'dec-21': 'wrong_team',
+    'dec-22': 'role_without_markers',
+    'dec-23': 'role_without_markers',
+    'dec-24': 'wrong_seniority',
+    'dec-25': 'different_named_person',
+    'dec-26': 'unrelated',
+    'dec-27': 'unrelated',
+    'dec-28': 'no_person',
+    'dec-29': 'wrong_team',
+    'dec-30': 'role_without_markers',
+    'dec-31': 'wrong_role',
+    'dec-32': 'no_person'}
+
 DECOY_DOCS = [
     ("dec-1", "2024-03-28T02:20:00Z", "prod", "INFO",
      "Engineer Priya Rao deployed checkout hotfix v2.3 to mitigate the #4091 outage."),
@@ -220,6 +255,8 @@ def build_ground_truth(noise_count):
     }
     gt = {key: [doc_id_for(l) for l in labels] for key, labels in classes.items()}
     gt["counts"] = {key.replace("_doc_ids", ""): len(v) for key, v in gt.items()}
+    gt["decoy_category_by_doc_id"] = {
+        doc_id_for(label): DECOY_CATEGORY[label] for label, *_ in DECOY_DOCS}
     # Reverse map so a maintainer can trace a flagged id back to the source doc.
     gt["label_by_doc_id"] = {doc_id_for(l): l
                              for labels in classes.values() for l in labels}

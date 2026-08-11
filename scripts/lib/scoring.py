@@ -183,7 +183,12 @@ def flagged_at(evaluations, threshold):
             if e.get("is_identifiable") and (e.get("confidence_score") or 0) >= threshold}
 
 
-def precision_recall(flagged_ids, positive_ids, documents_scanned):
+def precision_recall(flagged_ids, positive_ids, documents_scanned, label="positives"):
+    """Precision is None when nothing was flagged.
+
+    Reporting 0.0 there reads as "everything it flagged was wrong" when in fact
+    it flagged nothing, which is a different result and a better one.
+    """
     flagged_ids, positive_ids = set(flagged_ids), set(positive_ids)
     hits = flagged_ids & positive_ids
     false_positives = len(flagged_ids - positive_ids)
@@ -191,11 +196,41 @@ def precision_recall(flagged_ids, positive_ids, documents_scanned):
         "flagged": len(flagged_ids),
         "true_positives": len(hits),
         "false_positives": false_positives,
-        "precision": round(len(hits) / len(flagged_ids), 3) if flagged_ids else 0.0,
-        "recall": round(len(hits) / len(positive_ids), 3) if positive_ids else 0.0,
+        "precision": round(len(hits) / len(flagged_ids), 3) if flagged_ids else None,
+        "recall": round(len(hits) / len(positive_ids), 3) if positive_ids else None,
+        "recall_measured_against": f"{len(positive_ids)} {label}",
         "false_positives_per_1000_documents":
             round(1000.0 * false_positives / documents_scanned, 2) if documents_scanned else 0.0,
     }
+
+
+def demo_positive_ids(ground_truth):
+    """Subject and direct documents are the positives; decoys and noise are not."""
+    return set(ground_truth.get("subject_doc_ids") or []) | set(
+        ground_truth.get("direct_doc_ids") or [])
+
+
+def per_category(evaluations, ground_truth, threshold):
+    """False-positive rate by the marker each decoy varies.
+
+    The demo corpus changes one thing at a time, so an aggregate hides which
+    kind of near-miss the judgment cannot tell from the subject.
+    """
+    categories = ground_truth.get("decoy_category_by_doc_id") or {}
+    flagged = flagged_at(evaluations, threshold)
+    judged = {e["doc_id"] for e in evaluations}
+    out = {}
+    for doc_id, category in categories.items():
+        if doc_id not in judged:
+            continue
+        row = out.setdefault(category, {"judged": 0, "wrongly_flagged": 0})
+        row["judged"] += 1
+        if doc_id in flagged:
+            row["wrongly_flagged"] += 1
+    for row in out.values():
+        row["false_positive_rate"] = (
+            round(row["wrongly_flagged"] / row["judged"], 3) if row["judged"] else 0.0)
+    return dict(sorted(out.items(), key=lambda kv: -kv[1]["false_positive_rate"]))
 
 
 def span_validity(evaluations, texts):
