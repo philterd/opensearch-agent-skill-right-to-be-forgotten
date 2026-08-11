@@ -130,6 +130,12 @@ gate fails any run whose marker is confined to the positives. This is separate
 from the erasure workflow, where `[GDPR_REDACTED]` marks what was removed on
 purpose.
 
+`subjects` picks who to run this on, ranking by mentions in running prose
+rather than by message count and rejecting surnames that are ordinary words.
+`score-discovery` then scores retrieval and `score-judgment` scores the agent's
+judgment and its redaction spans. Scoring reports the three stages separately,
+because they fail independently and one end-to-end number hides which one broke.
+
 The gate also fails closed on an alias set with no name in it. An audit can only
 look for the variants it was given, so a subject whose roster entry carries no
 display name would otherwise pass while the corpus still prints their name on

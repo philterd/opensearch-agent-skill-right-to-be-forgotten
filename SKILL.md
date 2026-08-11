@@ -325,5 +325,8 @@ Always summarize each run as:
 | `roster` | Evaluation tooling, not part of the erasure workflow: extract a roster from `mail-enron` headers and report attribute coverage (see `EVALUATION.md`) |
 | `mask-corpus` | Evaluation tooling: mask one subject's alias variants out of `mail-enron` into a separate index, write the answer key to disk, and run the leakage gate |
 | `audit-mask` | Evaluation tooling: re-run the leakage gate against an existing masked index |
+| `subjects` | Evaluation tooling: rank roster subjects by descriptive mentions and screen out surnames that are ordinary words |
+| `score-discovery` | Evaluation tooling: Phase 1 recall@k against the labels, with a BM25 ablation and several profile wordings |
+| `score-judgment` | Evaluation tooling: Phase 2 and 3 metrics from an evaluations file, at every precision threshold |
 
 See `knowledge/` for GDPR references and the theory of indirect identification.

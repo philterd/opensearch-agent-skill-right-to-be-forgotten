@@ -24,6 +24,9 @@ Commands:
     roster         Evaluation only: extract a roster from mail-enron headers
     mask-corpus    Evaluation only: mask a subject out of mail-enron into a new index
     audit-mask     Evaluation only: re-run the leakage gate against the masked index
+    subjects       Evaluation only: rank roster subjects the corpus can score
+    score-discovery Evaluation only: recall@k for Phase 1, with a BM25 ablation
+    score-judgment Evaluation only: score Phase 2 and 3 from an evaluations file
 
 Data flow: `discover` emits candidates as JSON -> the host agent evaluates each
 using the judgment prompt in SKILL.md -> agent passes evaluations to `plan` /
@@ -308,6 +311,31 @@ def _load_roster_entries(path):
         return json.load(fh).get("entries", [])
 
 
+def cmd_subjects(args):
+    from lib.client import create_client
+    from lib import subjects
+    client = create_client(bootstrap=False)
+    entries = _load_roster_entries(args.roster)
+    result = subjects.rank(client, entries, index=args.index,
+                           candidates=args.candidates, sample=args.sample,
+                           threshold=args.word_like_ratio,
+                           min_messages=args.min_messages)
+    _out({
+        "ok": True,
+        "index": args.index,
+        "pool_size": result["pool_size"],
+        "considered": result["considered"],
+        "ranked": result["ranked"][:args.size],
+        "screened_out": result["screened_out"][:args.size],
+        "note": (
+            "Ranked by distinct descriptive mentions, not message count: a name in a "
+            "recipient list masks to a document about nobody. Subjects whose surname "
+            "is an ordinary word are screened out, since masking one deletes the word "
+            "from the corpus."
+        ),
+    })
+
+
 def cmd_mask_corpus(args):
     from lib.client import create_client
     from lib import corpus, masking
@@ -374,6 +402,127 @@ def cmd_audit_mask(args):
     _out({"ok": report["passed"], "masked_index": labels["masked_index"], "audit": report})
     if not report["passed"]:
         sys.exit(1)
+
+
+def cmd_score_discovery(args):
+    from lib.client import create_client
+    from lib.discovery import discover
+    from lib.model import find_deployed_model
+    from lib import corpus, scoring, subjects
+    client = create_client(bootstrap=False)
+    labels = corpus.load_labels(args.labels)
+    scoring.guard(labels, args.index)
+
+    derive, held = scoring.split_positives(labels["positives"])
+    if not held:
+        _fail("No positives left to score after the split.")
+
+    terms = scoring.usable_terms(
+        scoring.significant_terms(client, args.index, [p["doc_id"] for p in derive],
+                                  size=args.terms),
+        labels["aliases"])
+    profiles = scoring.build_profiles(terms)
+    if not profiles:
+        _fail("The derive half yielded no usable terms to build a profile from.")
+
+    # Descriptive classification needs the pre-mask text, so it reads the source.
+    source_texts = scoring.fetch_texts(
+        client, labels["source_index"], [p["original_id"] for p in held])
+    by_original = {p["original_id"]: p["doc_id"] for p in held}
+    surname = subjects.surname_of(
+        {"attributes": {"display_name_variants": labels["aliases"]["name_variants"]}})
+    split = scoring.descriptive_split(
+        [{"doc_id": oid} for oid in source_texts], source_texts, surname)
+    descriptive_ids = {by_original[d["doc_id"]] for d in split["descriptive"]}
+
+    held_ids = {p["doc_id"] for p in held}
+    derive_ids = {p["doc_id"] for p in derive}
+    model_id = find_deployed_model(client)
+    ks = tuple(int(k) for k in args.ks.split(","))
+    size = max(ks)
+
+    runs = []
+    for mode, mid in (("hybrid", model_id), ("bm25_only", None)):
+        for i, prof in enumerate(profiles, 1):
+            candidates, meta = discover(
+                client, index_pattern=args.index, profile=prof["profile"],
+                keywords=prof["keywords"], model_id=mid, size=size)
+            ranked = [c["doc_id"] for c in candidates]
+            runs.append({
+                "mode": mode,
+                "search_mode": meta.get("mode"),
+                "wording": i,
+                "recall_all_positives": scoring.recall_at_k(ranked, held_ids, ks),
+                "recall_descriptive": scoring.recall_at_k(ranked, descriptive_ids, ks),
+                "derive_half_retrieved": len(derive_ids & set(ranked)),
+            })
+
+    top = f"recall@{max(ks)}"
+    spread = {m: sorted(r["recall_descriptive"][top]["percent"]
+                        for r in runs if r["mode"] == m)
+              for m in ("hybrid", "bm25_only")}
+    _out({
+        "ok": True,
+        "stage": "discover",
+        "positives": {
+            "total": len(labels["positives"]),
+            "derive_half": len(derive),
+            "score_half": len(held),
+            "descriptive_in_score_half": len(descriptive_ids),
+            "list_only_in_score_half": len(held) - len(descriptive_ids),
+            "distinct_descriptive": split["distinct_descriptive"],
+        },
+        "terms": terms[:15],
+        "runs": runs,
+        "spread_at_top_k": spread,
+        "headline": (
+            "Read recall_descriptive: the list-only positives are documents whose "
+            "only mention was a recipient list, which no profile can retrieve."
+        ),
+        "assumptions": scoring.assumptions(labels, ks, profiles),
+    })
+
+
+def cmd_score_judgment(args):
+    from lib.client import create_client
+    from lib import corpus, scoring
+    client = create_client(bootstrap=False)
+    labels = corpus.load_labels(args.labels)
+    scoring.guard(labels, args.index)
+
+    evaluations = _load_json_arg(args.evaluations)
+    if isinstance(evaluations, dict):
+        evaluations = evaluations.get("evaluations", [])
+    derive, held = scoring.split_positives(labels["positives"])
+    evaluations = scoring.without(evaluations, {p["doc_id"] for p in derive})
+    if not evaluations:
+        _fail("No judgments left after excluding the derive half.")
+
+    positive_ids = {p["doc_id"] for p in held}
+    scanned = labels["stats"]["documents_scanned"]
+    texts = scoring.fetch_texts(client, args.index, [e["doc_id"] for e in evaluations])
+
+    by_threshold = {}
+    for mode, threshold in scoring.PRECISION_THRESHOLDS.items():
+        flagged = scoring.flagged_at(evaluations, threshold)
+        by_threshold[mode] = {
+            "threshold": threshold,
+            **scoring.precision_recall(flagged, positive_ids, scanned),
+        }
+    _out({
+        "ok": True,
+        "stages": ["agent judgment + filter_flagged", "identifying_snippets"],
+        "judgments_scored": len(evaluations),
+        "flagged_set": by_threshold,
+        "spans": scoring.span_validity(evaluations, texts),
+        "over_redaction": scoring.over_redaction(evaluations, texts),
+        "note": (
+            "One judgment pass serves every threshold; they only reread its "
+            "confidence scores. Judgments on the derive half are excluded, since "
+            "those documents helped write the query."
+        ),
+        "assumptions": scoring.assumptions(labels, (), []),
+    })
 
 
 def _parse_list(value):
@@ -526,6 +675,36 @@ def build_parser():
                     help="Build the masked index without deploying the embedding model")
     add_field_opts(sp)
     sp.set_defaults(func=cmd_mask_corpus)
+
+    sp = sub.add_parser("subjects", help="Evaluation only: not part of the erasure workflow")
+    sp.add_argument("--roster", default=None,
+                    help="Roster file (default gdpr-eval/enron-roster.json)")
+    sp.add_argument("--index", default="mail-enron")
+    sp.add_argument("--candidates", type=int, default=80,
+                    help="Roster entries to examine, highest volume first (default 80)")
+    sp.add_argument("--sample", type=int, default=300,
+                    help="Documents sampled per candidate (default 300)")
+    sp.add_argument("--word-like-ratio", type=float, default=8.0,
+                    help="Reject a surname this many times more common than the full name")
+    sp.add_argument("--min-messages", type=int, default=20)
+    sp.add_argument("--size", type=int, default=20, help="Rows to print (default 20)")
+    sp.set_defaults(func=cmd_subjects)
+
+    def add_score_opts(sp):
+        sp.add_argument("--labels", default="gdpr-eval/enron-labels.json")
+        sp.add_argument("--index", default="mail-enron-masked")
+
+    sp = sub.add_parser("score-discovery", help="Evaluation only: not part of the erasure workflow")
+    add_score_opts(sp)
+    sp.add_argument("--ks", default="10,25,50,100,200,500")
+    sp.add_argument("--terms", type=int, default=30,
+                    help="Distinctive terms pulled from the derive half (default 30)")
+    sp.set_defaults(func=cmd_score_discovery)
+
+    sp = sub.add_parser("score-judgment", help="Evaluation only: not part of the erasure workflow")
+    add_score_opts(sp)
+    sp.add_argument("--evaluations", required=True, help="Inline JSON or @path")
+    sp.set_defaults(func=cmd_score_judgment)
 
     sp = sub.add_parser("audit-mask", help="Evaluation only: not part of the erasure workflow")
     sp.add_argument("--labels", default=None,

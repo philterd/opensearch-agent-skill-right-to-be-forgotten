@@ -5,9 +5,10 @@ resulting numbers do and do not tell you.
 
 > **Status:** stages one and two are implemented for Enron: `roster` builds the
 > naming-channel roster and reports coverage, `mask-corpus` builds the masked
-> index and the label set, and `audit-mask` re-runs the leakage gate. Stage
-> three, scoring, is not built. The demo corpus in `scripts/seed_demo.py` still
-> carries hand-built labels.
+> index and the label set, `audit-mask` re-runs the leakage gate, `subjects`
+> ranks candidates the corpus can score, and `score-discovery` and
+> `score-judgment` score the three pipeline stages. The demo corpus in
+> `scripts/seed_demo.py` still carries hand-built labels.
 >
 > Everything below marked **Measured** is a figure from a real run against the
 > full 517,394-message corpus, not an estimate.
