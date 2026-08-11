@@ -15,6 +15,8 @@ import re
 import sys
 import tokenize
 
+import pytest
+
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SKIP = {".venv", "__pycache__", ".git", ".pytest_cache"}
 
@@ -52,9 +54,14 @@ def nested_quote_fstrings(source):
     return hits
 
 
+# The detector reads FSTRING_START tokens, which only exist from 3.12. On an
+# older interpreter the syntax would have failed at import anyway.
+needs_312 = pytest.mark.skipif(sys.version_info < (3, 12),
+                               reason="f-string tokens require Python 3.12")
+
+
+@needs_312
 def test_no_source_uses_f_string_syntax_newer_than_the_floor():
-    if sys.version_info < (3, 12):
-        return  # this interpreter would already have rejected it
     assert python_floor() < (3, 12), "floor moved to 3.12; this check can go"
     failures = []
     for path in sources():
@@ -65,6 +72,7 @@ def test_no_source_uses_f_string_syntax_newer_than_the_floor():
         + "\n".join(failures))
 
 
+@needs_312
 def test_the_check_detects_the_syntax_it_is_guarding_against():
     """Without this, the guard could silently stop working."""
     assert nested_quote_fstrings('x = f"{"a"}"\n') == [1]
