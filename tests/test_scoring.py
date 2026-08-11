@@ -41,7 +41,10 @@ def test_recall_at_k_counts_only_the_top_k():
     ranked = ["a", "b", "c", "d"]
     out = scoring.recall_at_k(ranked, {"c", "z"}, ks=(2, 4))
     assert out["recall@2"]["found"] == 0
-    assert out["recall@4"] == {"found": 1, "of": 2, "percent": 50.0, "k_caps_recall": False}
+    assert out["recall@4"]["found"] == 1
+    assert out["recall@4"]["of"] == 2
+    assert out["recall@4"]["percent"] == 50.0
+    assert out["recall@4"]["k_caps_recall"] is False
 
 
 def test_recall_flags_a_k_that_cannot_reach_full_recall():
@@ -222,8 +225,8 @@ def test_extended_k_removes_the_cap_warning():
 
 # --- the ablation must be stated, not just tabulated ------------------------- #
 
-def _run(mode, percent, key="recall@500"):
-    return {"mode": mode, "recall_descriptive": {key: {"percent": percent}}}
+def _run(mode, percent, key="recall@500", of=76):
+    return {"mode": mode, "recall_descriptive": {key: {"percent": percent, "of": of}}}
 
 
 def test_ablation_says_plainly_when_bm25_wins():
@@ -265,3 +268,35 @@ def test_assumptions_carry_the_precision_thresholds_and_what_is_measured():
 def test_interpretation_refuses_the_stronger_reading():
     assert "adjacent, not the same" in scoring.INTERPRETATION
     assert "demo corpus" in scoring.INTERPRETATION
+
+
+# --- interval reporting on small denominators -------------------------------- #
+
+def test_wilson_interval_widens_as_the_denominator_shrinks():
+    assert scoring.wilson_interval(24, 76) == (22.2, 42.7)
+    narrow = scoring.wilson_interval(240, 760)
+    assert narrow[1] - narrow[0] < 42.7 - 22.2
+
+
+def test_wilson_interval_handles_the_edges():
+    assert scoring.wilson_interval(0, 0) == (0.0, 0.0)
+    assert scoring.wilson_interval(0, 10)[0] == 0.0
+    assert scoring.wilson_interval(10, 10)[1] == 100.0
+
+
+def test_recall_carries_an_interval():
+    out = scoring.recall_at_k(["a", "b"], {"a", "b", "c"}, ks=(2,))
+    assert out["recall@2"]["ci95"] == list(scoring.wilson_interval(2, 3))
+
+
+def test_separable_matches_the_measured_case():
+    assert scoring.separable(24, 14, 76) is False   # the run we made
+    assert scoring.separable(60, 5, 76) is True
+
+
+def test_verdict_withholds_the_magnitude_when_intervals_overlap():
+    out = scoring.compare_modes([_run("hybrid", 18.4), _run("bm25_only", 31.6)],
+                                "recall@500")
+    assert out["intervals_disjoint"] is False
+    assert "not settled" in out["verdict"]
+    assert "term bags" in out["verdict"]

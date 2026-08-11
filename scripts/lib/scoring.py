@@ -7,6 +7,7 @@ thresholds only reread the confidence scores it already produced.
 """
 
 import hashlib
+import math
 import re
 
 from lib.leakage import assert_scorable
@@ -30,6 +31,29 @@ def split_positives(positives, namespace="derive/v1"):
     return derive, score
 
 
+def wilson_interval(hits, total, z=1.96):
+    """95% interval on a recall estimate.
+
+    Descriptive positive sets are small, so a bare percentage reads far firmer
+    than it is: 24 of 76 is 31.6% with an interval spanning 22% to 43%.
+    """
+    if not total:
+        return (0.0, 0.0)
+    p = hits / total
+    denom = 1 + z * z / total
+    centre = (p + z * z / (2 * total)) / denom
+    half = z * math.sqrt(p * (1 - p) / total + z * z / (4 * total * total)) / denom
+    return (round(100 * max(0.0, centre - half), 1),
+            round(100 * min(1.0, centre + half), 1))
+
+
+def separable(a_hits, b_hits, total):
+    """Whether two recall estimates on the same denominator have disjoint intervals."""
+    a_lo, a_hi = wilson_interval(a_hits, total)
+    b_lo, b_hi = wilson_interval(b_hits, total)
+    return a_lo > b_hi or b_lo > a_hi
+
+
 def extend_ks(ks, positive_count):
     """Add a k that can reach every positive, so recall is never silently capped."""
     ks = sorted(set(int(k) for k in ks))
@@ -44,10 +68,12 @@ def recall_at_k(ranked_ids, positive_ids, ks=DEFAULT_KS):
     out = {}
     for k in ks:
         found = len(positive_ids & set(ranked_ids[:k]))
+        low, high = wilson_interval(found, total)
         out[f"recall@{k}"] = {
             "found": found,
             "of": total,
             "percent": round(100.0 * found / total, 1) if total else 0.0,
+            "ci95": [low, high],
             "k_caps_recall": k < total,
         }
     return out
@@ -110,6 +136,11 @@ def compare_modes(runs, top_key, margin=1.0):
         best[run["mode"]] = max(best.get(run["mode"], 0.0), pct)
     hybrid, bm25 = best.get("hybrid", 0.0), best.get("bm25_only", 0.0)
     gap = round(hybrid - bm25, 1)
+    totals = {r["recall_descriptive"][top_key]["of"] for r in runs}
+    total = totals.pop() if len(totals) == 1 else 0
+    hits = {m: round(pct * total / 100) for m, pct in
+            (("hybrid", hybrid), ("bm25_only", bm25))}
+    disjoint = separable(hits["hybrid"], hits["bm25_only"], total)
     if abs(gap) < margin:
         verdict = (f"Hybrid and BM25-only are within noise at {top_key} "
                    f"({hybrid}% against {bm25}%). This run does not support the claim "
@@ -121,8 +152,17 @@ def compare_modes(runs, top_key, margin=1.0):
         verdict = (f"BM25-only beat hybrid at {top_key} by {abs(gap)} points "
                    f"({bm25}% against {hybrid}%). The skill's mechanism claim, that "
                    f"hybrid surfaces documents BM25-only misses, is contradicted here.")
+    verdict += (" Generated profiles are term bags of rare proper nouns, which "
+                "favour exact lexical matching and give a sentence embedding little "
+                "to work with, so this compares the two modes on that query style "
+                "rather than on fluent prose.")
+    if not disjoint and abs(gap) >= margin:
+        verdict += (f" On {total} positives the two intervals still overlap, so the "
+                    f"direction is evidence but the size is not settled; confirm on "
+                    f"further subjects before acting on the magnitude.")
     return {"best_hybrid_percent": hybrid, "best_bm25_only_percent": bm25,
-            "gap_points": gap, "verdict": verdict}
+            "gap_points": gap, "positives": total,
+            "intervals_disjoint": disjoint, "verdict": verdict}
 
 
 INTERPRETATION = (
@@ -132,7 +172,9 @@ INTERPRETATION = (
     "describing a person identifies them. These are adjacent, not the same. Do not "
     "read this figure as evidence for indirect identification from a description; "
     "the demo corpus, whose documents are written to describe people, is where that "
-    "claim is testable."
+    "claim is testable. The query is also a generated term bag, not the fluent prose "
+    "a real erasure request would supply, which suits lexical matching and handicaps "
+    "the neural clause."
 )
 
 
@@ -246,6 +288,14 @@ def without(evaluations, doc_ids):
     return [e for e in evaluations if e.get("doc_id") not in doc_ids]
 
 
+def _weights():
+    try:
+        from lib.model import hybrid_weights
+        return hybrid_weights()
+    except Exception:  # noqa: BLE001 - assumptions must never fail the report
+        return (None, None)
+
+
 def assumptions(labels, ks, profiles, thresholds=None):
     """Every report states what it rests on, so a reader can attack an input."""
     aliases = labels.get("aliases", {})
@@ -257,6 +307,7 @@ def assumptions(labels, ks, profiles, thresholds=None):
         "ambiguous_variants_masked_but_not_labelled": aliases.get("ambiguous_variants") or [],
         "mask_replacement": labels.get("mask_replacement", ""),
         "phone_policy": labels.get("phone_policy"),
+        "hybrid_weights_lexical_semantic": list(_weights()),
         "k_values": list(ks),
         "precision_thresholds": dict(thresholds or PRECISION_THRESHOLDS),
         "profile_wordings": [p["profile"] for p in profiles],

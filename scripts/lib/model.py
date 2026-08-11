@@ -10,6 +10,7 @@ All ML Commons calls go through the REST plugin API via
 Python client.
 """
 
+import os
 import time
 
 # Local pretrained model shipped with OpenSearch ML Commons. TORCH_SCRIPT
@@ -133,22 +134,43 @@ def create_embedding_pipeline(
     return pipeline_id
 
 
-def create_hybrid_search_pipeline(client, pipeline_id=SEARCH_PIPELINE_ID):
-    """Create a search pipeline with the normalization processor for hybrid queries.
+def hybrid_weights():
+    """(lexical, semantic) weights for hybrid score fusion.
 
-    Combines BM25 and neural scores with min-max normalization and an
-    arithmetic-mean combination (0.4 lexical / 0.6 semantic) — biased toward
-    semantic recall, which is what indirect identification depends on.
+    Override with GDPR_HYBRID_WEIGHTS="0.4,0.6". The default is even because a
+    semantic bias was measured demoting good lexical hits: the embedding model
+    truncates long documents, so k-NN scores only each opening while BM25 reads
+    the whole text. Weighting the weaker signal higher moves BM25 hits down the
+    ranking rather than adding to them.
     """
+    raw = os.getenv("GDPR_HYBRID_WEIGHTS", "").strip()
+    if not raw:
+        return (0.5, 0.5)
+    try:
+        lexical, semantic = (float(v) for v in raw.split(",", 1))
+    except ValueError:
+        raise RuntimeError(
+            f"GDPR_HYBRID_WEIGHTS must be two numbers like '0.5,0.5', got {raw!r}.")
+    total = lexical + semantic
+    if total <= 0:
+        raise RuntimeError("GDPR_HYBRID_WEIGHTS must sum to more than zero.")
+    return (lexical / total, semantic / total)
+
+
+def create_hybrid_search_pipeline(client, pipeline_id=SEARCH_PIPELINE_ID, weights=None):
+    """Create the search pipeline that fuses BM25 and neural scores."""
+    lexical, semantic = weights or hybrid_weights()
     _req(client, "PUT", f"/_search/pipeline/{pipeline_id}", {
-        "description": "gdpr-forget-me: hybrid BM25 + neural normalization",
+        "description": (
+            f"gdpr-forget-me: hybrid BM25 + neural normalization "
+            f"(lexical {lexical}, semantic {semantic})"),
         "phase_results_processors": [
             {
                 "normalization-processor": {
                     "normalization": {"technique": "min_max"},
                     "combination": {
                         "technique": "arithmetic_mean",
-                        "parameters": {"weights": [0.4, 0.6]},
+                        "parameters": {"weights": [lexical, semantic]},
                     },
                 }
             }
