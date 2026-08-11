@@ -25,15 +25,10 @@ OPENSEARCH_DOCKER_IMAGE = os.getenv(
 )
 OPENSEARCH_DOCKER_CONTAINER = os.getenv("OPENSEARCH_DOCKER_CONTAINER", "gdpr-forget-me-os")
 OPENSEARCH_DOCKER_START_TIMEOUT = int(os.getenv("OPENSEARCH_DOCKER_START_TIMEOUT", "120"))
-# The image defaults to a 1Gb heap. Deploying the embedding model leaves heap
-# use above the ML Commons jvm_heap_memory_threshold (85% by default), so every
-# inference call is refused with a circuit_breaking_exception: model deploy or
-# the first neural bulk request dies. Raising the heap clears it; raising the
-# threshold instead would trade a clean refusal for a real OOM.
-#
-# Measured on this image: 1Gb sits at 92% and 2Gb at 93%, both refused. 3Gb
-# deploys the model and ingests 2000 embedded documents, ending at 11%. Override
-# for a larger corpus or a memory-constrained Docker VM.
+# The image default of 1Gb leaves heap above the ML Commons
+# jvm_heap_memory_threshold (85%), so inference is refused with a
+# circuit_breaking_exception. Measured: 1Gb sits at 92%, 2Gb at 93%, both
+# refused; 3Gb deploys the model and ingests 2000 docs, ending at 11%.
 OPENSEARCH_JAVA_OPTS = os.getenv("OPENSEARCH_JAVA_OPTS", "-Xms3g -Xmx3g")
 
 _AUTH_FAILURE_TOKENS = (

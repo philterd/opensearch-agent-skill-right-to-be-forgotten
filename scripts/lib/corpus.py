@@ -92,6 +92,9 @@ def build_masked_corpus(client, aliases, source_index=SOURCE_INDEX,
     thin = alias_set_failures(aliases)
     if thin:
         raise ValueError(" ".join(thin))
+    # Masking is broad, labelling is not: a document counts as a positive only
+    # when it holds a variant no other person in the roster shares.
+    label_pattern = build_pattern(aliases["label_variants"])
 
     neural = _create_masked_index(client, masked_index, text_field, timestamp_field,
                                   setup_neural, embedding_field)
@@ -116,13 +119,15 @@ def build_masked_corpus(client, aliases, source_index=SOURCE_INDEX,
     for original_id, text, timestamp in iter_source_documents(
             client, source_index, text_field, timestamp_field):
         scanned += 1
+        label_hits = len(find_variants(text, label_pattern))
         masked, hits = mask_text(text, pattern, mask_token)
         new_id = masked_doc_id(original_id)
         if hits:
             masked_docs += 1
             total_hits += hits
+        if label_hits:
             positives.append({"doc_id": new_id, "original_id": original_id,
-                              "variant_hits": hits})
+                              "label_hits": label_hits})
         batch.append((new_id, {text_field: masked, timestamp_field: timestamp}))
         if len(batch) >= _BULK_CHUNK:
             flush()
@@ -137,6 +142,9 @@ def build_masked_corpus(client, aliases, source_index=SOURCE_INDEX,
         "documents_scanned": scanned,
         "documents_masked": masked_docs,
         "variant_occurrences_removed": total_hits,
+        "mask_variants": len(aliases["variants"]),
+        "label_variants": len(aliases["label_variants"]),
+        "ambiguous_variants": len(aliases.get("ambiguous_variants") or []),
         "neural_search": neural is not None,
         "fields_carried": [text_field, timestamp_field],
     }
@@ -184,7 +192,7 @@ def verify_positives(client, aliases, positives, source_index=SOURCE_INDEX,
     Cheap guard against a label set built from the wrong index or a stale
     alias list, which would silently produce labels nobody can trust.
     """
-    pattern = build_pattern(aliases["variants"])
+    pattern = build_pattern(aliases["label_variants"])
     checked = confirmed = 0
     for item in positives[:sample]:
         try:
@@ -200,9 +208,8 @@ def verify_positives(client, aliases, positives, source_index=SOURCE_INDEX,
 def write_labels(path, aliases, positives, stats, audit_report, phone_policy):
     """Write the answer key to disk.
 
-    Never printed: this output lands in the context of the agent that then
-    judges the corpus, and the positives are exactly what its judgment is
-    supposed to determine. Same discipline as seed-demo's answer key.
+    Never printed: this output reaches the agent that judges the corpus, and
+    the positives are what its judgment is meant to determine.
     """
     directory = os.path.dirname(path)
     if directory:
@@ -221,7 +228,8 @@ def write_labels(path, aliases, positives, stats, audit_report, phone_policy):
         "id_map": {p["doc_id"]: p["original_id"] for p in positives},
         "assumptions": (
             "Positives are documents whose pre-mask text contained at least one alias "
-            "variant. Masking manufactures the indirect case: a sentence written without "
+            "variant unique to the subject in the roster; variants shared with another "
+            "person are masked but never labelled. Masking manufactures the indirect case: a sentence written without "
             "a name would have been phrased differently from one with the name removed, "
             "so these labels support a proxy measurement, not a natural sample. Results "
             "do not transfer to another corpus."

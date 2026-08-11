@@ -103,9 +103,8 @@ def parse_addresses(value):
 def parse_x_header(value):
     """Return [(display_name, exchange_login)] from an X-From/X-To/X-cc value.
 
-    The Exchange login is the trailing `CN=` fragment of the distinguished
-    name, which is the alias people are referred to by in prose and in system
-    messages. It is observed rather than guessed.
+    The login is the trailing `CN=` fragment of the distinguished name,
+    observed rather than guessed.
     """
     if not value:
         return []
@@ -125,10 +124,8 @@ def parse_x_header(value):
 def pair_names(addresses, x_value):
     """Zip parsed addresses with the display names in the matching X- header.
 
-    Positional, because both lists come from the same recipient list in the
-    same order. A length mismatch means the two headers disagree, so the names
-    are dropped rather than risk attaching one person's name to another's
-    address.
+    Positional: both lists come from the same recipients in the same order. On
+    a length mismatch the names are dropped rather than mispaired.
     """
     parsed = parse_x_header(x_value)
     if len(parsed) != len(addresses):

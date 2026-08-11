@@ -107,6 +107,9 @@ def related_addresses(entries, address):
 
     People hold several addresses in this corpus. The roster is keyed by
     address, so the person is reassembled by matching name variants.
+
+    Limit: two people sharing a display name are merged, since the headers
+    cannot tell them apart, and the labels then cover both.
     """
     by_address = {e["id"]: e for e in entries}
     subject = by_address.get(address)
@@ -123,11 +126,43 @@ def related_addresses(entries, address):
     return sorted(found)
 
 
+def _entry_forms(entry, min_length):
+    """The (names, logins) one roster entry generates."""
+    names, logins = set(), set()
+    for variant in entry["attributes"]["display_name_variants"]:
+        names.update(_name_forms(variant))
+    # Observed Exchange aliases first; the generated forms are a fallback for
+    # addresses whose X- header never carried a distinguished name.
+    logins.update(entry["attributes"].get("exchange_logins") or [])
+    logins.update(_login_forms(entry["id"]))
+    return ({n for n in names if len(n) >= min_length},
+            {l for l in logins if len(l) >= min_length})
+
+
+def variant_owners(entries, min_length=MIN_VARIANT_LENGTH):
+    """Map each variant the roster can generate to the addresses generating it.
+
+    A variant more than one person produces identifies none of them. This is
+    EVALUATION.md scheme 2b's uniqueness test on the naming channel.
+    """
+    owners = {}
+    for entry in entries:
+        names, logins = _entry_forms(entry, min_length)
+        for variant in names | logins | {entry["id"]}:
+            owners.setdefault(variant.lower(), set()).add(entry["id"])
+    return owners
+
+
 def alias_set(entries, address, min_length=MIN_VARIANT_LENGTH):
     """Build the alias set for one subject.
 
-    Returns the variants grouped by origin so a report can state exactly what
-    was masked, plus the flat list masking and the audit both consume.
+    Two lists, because masking and labelling need different breadth.
+
+    ``variants`` is anything that might refer to the subject and is what gets
+    masked; over-masking only costs context. ``label_variants`` is the subset
+    no other person in the roster produces, and is what makes a document a
+    positive. Labelling on the broad set made 92% of one subject's positives
+    documents about a different Harry.
     """
     by_address = {e["id"]: e for e in entries}
     addresses = related_addresses(entries, address)
@@ -137,26 +172,33 @@ def alias_set(entries, address, min_length=MIN_VARIANT_LENGTH):
         entry = by_address.get(addr)
         if entry is None:
             continue
-        for variant in entry["attributes"]["display_name_variants"]:
-            names.update(_name_forms(variant))
-        # Observed Exchange aliases first; the generated forms are a fallback
-        # for addresses whose X- header never carried a distinguished name.
-        logins.update(entry["attributes"].get("exchange_logins") or [])
-        logins.update(_login_forms(addr))
+        entry_names, entry_logins = _entry_forms(entry, min_length)
+        names |= entry_names
+        logins |= entry_logins
 
-    def keep(values):
-        return sorted({v for v in values if len(v) >= min_length})
-
-    names, logins = keep(names), keep(logins)
+    names, logins = sorted(names), sorted(logins)
     # An address is masked whole, so its local part being a login form is not a
     # separate risk; both are kept because prose cites bare logins too.
     variants = sorted(set(addresses) | set(names) | set(logins), key=lambda v: (-len(v), v))
+
+    owners = variant_owners(entries, min_length)
+    mine = set(addresses)
+    label_variants, ambiguous = [], []
+    for variant in variants:
+        # Unowned means no other roster entry generates it either.
+        if owners.get(variant.lower(), set()) <= mine:
+            label_variants.append(variant)
+        else:
+            ambiguous.append(variant)
+
     return {
         "subject": address,
         "addresses": addresses,
         "name_variants": names,
         "login_variants": logins,
         "variants": variants,
+        "label_variants": label_variants,
+        "ambiguous_variants": ambiguous,
         "min_variant_length": min_length,
     }
 
@@ -164,19 +206,16 @@ def alias_set(entries, address, min_length=MIN_VARIANT_LENGTH):
 def build_pattern(variants):
     """One case-insensitive alternation, longest variant first.
 
-    Longest-first matters: `phillip.allen@enron.com` must be consumed whole
-    rather than leaving `@enron.com` behind after matching `phillip.allen`.
+    Longest-first so a whole address is consumed, not just its local part.
 
-    The alternation must be grouped. Alternation binds looser than the
-    lookarounds, so an ungrouped pattern anchors only its first and last branch
-    and every variant between them matches mid-word, masking `Callender` for
-    `Allen`. Lookarounds rather than \\b so variants ending in `.` still anchor.
+    The alternation must stay grouped: ungrouped, it binds looser than the
+    lookarounds and only the first and last branch get boundaries, so `Allen`
+    matches inside `Callender`. Lookarounds rather than \\b so a variant
+    ending in `.` still anchors.
 
-    The boundary is `\\w` alone, deliberately not excluding `@`. Forwarded mail
-    in this corpus wraps addresses across ASCII-art table cells, as
-    `<Lynn.Blair@e| | |nron.com>`; treating `Blair@` as address interior and
-    skipping it left the surname sitting in the masked corpus. Matching a name
-    that happens to sit against an `@` is the safe direction to err.
+    The boundary excludes `@` deliberately: forwarded mail wraps addresses as
+    `<Lynn.Blair@e| | |nron.com>`, and skipping `Blair@` as address interior
+    left the surname in the masked corpus.
     """
     usable = [v for v in variants if v]
     if not usable:

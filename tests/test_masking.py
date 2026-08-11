@@ -97,6 +97,51 @@ def test_alias_set_prefers_observed_exchange_logins():
     assert "lynn.blair" in aliases["login_variants"]    # generated fallback
 
 
+# --- mask broadly, label narrowly ------------------------------------------- #
+
+# Two people share the given name "Phillip"; only one is an Allen.
+SHARED = ENTRIES + [_entry("phillip.love@enron.com", ["Phillip Love"])]
+
+
+def test_variant_owners_records_every_person_producing_a_variant():
+    owners = masking.variant_owners(SHARED)
+    assert owners["phillip"] == {"phillip.allen@enron.com", "k..allen@enron.com",
+                                 "phillip.love@enron.com"}
+    assert owners["allen"] == {"phillip.allen@enron.com", "k..allen@enron.com"}
+
+
+def test_a_shared_given_name_is_masked_but_never_labelled():
+    aliases = masking.alias_set(SHARED, "phillip.allen@enron.com")
+    assert "Phillip" in aliases["variants"]            # still masked
+    assert "Phillip" in aliases["ambiguous_variants"]  # but not a label
+    assert "Phillip" not in aliases["label_variants"]
+    assert "Allen" in aliases["label_variants"]
+    assert "Phillip K Allen" in aliases["label_variants"]
+    assert "phillip.allen@enron.com" in aliases["label_variants"]
+
+
+def test_an_unshared_name_stays_in_both_sets():
+    aliases = masking.alias_set(SHARED, "someone.else@enron.com")
+    assert aliases["ambiguous_variants"] == []
+    assert aliases["label_variants"] == aliases["variants"]
+
+
+def test_labelling_ignores_documents_that_only_share_the_given_name():
+    aliases = masking.alias_set(SHARED, "phillip.allen@enron.com")
+    client = _FakeClient([
+        ("allen-p/sent/1", {"message": "Phillip Allen signed it.", "@timestamp": "t1"}),
+        ("allen-p/sent/2", {"message": "Phillip will handle it.", "@timestamp": "t2"}),
+    ])
+    positives, stats = corpus.build_masked_corpus(client, aliases, setup_neural=False)
+
+    # Both documents are masked, only the discriminative one is a positive.
+    assert stats["documents_masked"] == 2
+    assert [p["original_id"] for p in positives] == ["allen-p/sent/1"]
+    assert stats["label_variants"] < stats["mask_variants"]
+    for source in client.indexed.values():
+        assert "Phillip" not in source["message"]
+
+
 # --- the gate fails closed on a thin alias set ------------------------------ #
 
 def _nameless():
@@ -127,6 +172,25 @@ def test_audit_fails_on_a_nameless_alias_set_even_with_clean_text():
     assert report["surviving_variants"]["distinct"] == 0  # nothing to look for
     assert "no name variants" in report["failures"][0]
     assert report["alias_set"]["name_variants"] == 0
+
+
+def test_two_people_with_the_same_recorded_name_are_merged():
+    """A known limit: the roster cannot tell them apart, so it treats them as one.
+
+    Their shared variants then look unique to the merged subject, which is why
+    this is a caveat rather than something the gate can catch.
+    """
+    twins = [_entry("a@enron.com", ["Chris Smith"]), _entry("b@enron.com", ["Chris Smith"])]
+    aliases = masking.alias_set(twins, "a@enron.com")
+    assert aliases["addresses"] == ["a@enron.com", "b@enron.com"]
+    assert aliases["ambiguous_variants"] == []
+
+
+def test_gate_fails_on_an_alias_set_with_nothing_unique_to_label_on():
+    """Reachable through a hand-edited label file, which audit-mask reads back."""
+    failures = leakage.alias_set_failures(
+        {"subject": "a@enron.com", "name_variants": ["Chris"], "label_variants": []})
+    assert any("unique to them" in f for f in failures)
 
 
 def test_build_masked_corpus_refuses_a_nameless_alias_set():

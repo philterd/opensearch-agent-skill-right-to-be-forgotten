@@ -90,14 +90,20 @@ def _timestamp(msg):
 
 
 def _header(msg, name):
-    return " ".join((msg.get(name) or "").split())
+    """Header value as collapsed text, or "" when absent.
+
+    str() is required: under compat32 a header with encoded words returns an
+    email.header.Header, which has no .split(), aborting the whole run.
+    """
+    value = msg.get(name)
+    return "" if value is None else " ".join(str(value).split())
 
 
 def _addresses(msg, header):
-    value = msg.get(header)
+    value = _header(msg, header)
     if not value:
         return []
-    return [a.strip() for a in " ".join(value.split()).split(",") if a.strip()]
+    return [a.strip() for a in value.split(",") if a.strip()]
 
 
 def parse_member(raw, custodian, folder, max_chars):
@@ -111,7 +117,7 @@ def parse_member(raw, custodian, folder, max_chars):
     except (ValueError, TypeError):
         return None
 
-    subject = " ".join((msg.get("Subject") or "").split())
+    subject = _header(msg, "Subject")
     body = _clean_body(_body_text(msg), max_chars)
     if not body and not subject:
         return None
@@ -123,20 +129,18 @@ def parse_member(raw, custodian, folder, max_chars):
         "@timestamp": _timestamp(msg),
         "message": combined,
         "subject": subject,
-        "from": (msg.get("From") or "").strip(),
+        "from": _header(msg, "From"),
         "to": _addresses(msg, "To"),
         "cc": _addresses(msg, "Cc"),
-        # From/To/Cc hold bare addresses in this corpus; the readable names and
-        # Exchange logins are only in the X- headers, as
-        # `Fagan, Fran </O=ENRON/OU=NA/CN=RECIPIENTS/CN=FFAGAN>`. Kept verbatim
-        # and paired positionally with the address lists above, because the
-        # display names contain the commas those lists were split on.
+        # From/To/Cc are bare addresses; readable names and Exchange logins
+        # live only here, as `Fagan, Fran </O=ENRON/...CN=FFAGAN>`. Kept
+        # verbatim and paired positionally with the lists above.
         "x_from": _header(msg, "X-From"),
         "x_to": _header(msg, "X-To"),
         "x_cc": _header(msg, "X-cc"),
         "custodian": custodian,
         "folder": folder,
-        "message_id": (msg.get("Message-ID") or "").strip(),
+        "message_id": _header(msg, "Message-ID"),
     }
 
 

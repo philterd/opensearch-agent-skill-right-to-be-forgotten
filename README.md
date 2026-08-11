@@ -107,9 +107,16 @@ set (full name, surname, given name, initials, login forms, every address that
 person used), removes every variant from the searched text, and writes the
 result to a separate index under opaque ids. `mail-enron` is left untouched, and
 only the masked text and its timestamp are carried across, so no header or
-mailbox name reaches a search over the masked copy. The positives, meaning the
-documents that contained a variant before it was removed, go to a label file on
-disk rather than to the output.
+mailbox name reaches a search over the masked copy. The positives go to a label
+file on disk rather than to the output.
+
+Masking and labelling use different halves of that alias set. Everything gets
+masked, because over-masking only costs residual context. A document is only
+labelled a positive when it holds a variant no other person in the roster
+produces. A given name fails that test as soon as the corpus holds a second
+person with the same one, and on a ten-custodian sample of this corpus seven
+people share the given name of one subject: labelling on the full alias set made
+92% of that subject's positives documents about somebody else.
 
 Masking is then audited, and the audit is a gate rather than a warning: if one
 variant survives, the document is still trivially retrievable and every number

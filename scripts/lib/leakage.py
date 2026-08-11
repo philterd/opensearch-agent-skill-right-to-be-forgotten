@@ -57,22 +57,26 @@ def count_phone_signals(text):
 def alias_set_failures(aliases):
     """Reasons an alias set cannot support a trustworthy audit.
 
-    The audit can only look for variants it was given, so an alias set with no
-    name in it passes while the corpus still says the subject's name on every
-    page. That is worse than no gate, because it certifies a corpus as scorable
-    when it is not. Observed on the real corpus: a subject with six
-    address-derived variants and no display name passed the audit while 89
-    documents still contained their full name verbatim.
+    The audit only looks for variants it was given, so a nameless alias set
+    passes while the corpus still prints the subject's name. Observed live: six
+    address-derived variants passed while 89 documents held the full name.
     """
     if aliases is None:
         return []
+    subject = aliases.get("subject", "unknown")
     failures = []
     if not aliases.get("name_variants"):
         failures.append(
-            f"Alias set for '{aliases.get('subject', 'unknown')}' contains no name "
-            f"variants, only addresses and logins, so masking cannot remove the "
-            f"subject's name and the audit would pass without checking for it. "
-            f"Give the roster a display name for this subject, or pick another."
+            f"Alias set for '{subject}' contains no name variants, only addresses "
+            f"and logins, so masking cannot remove the subject's name and the audit "
+            f"would pass without checking for it. Give the roster a display name for "
+            f"this subject, or pick another."
+        )
+    if not aliases.get("label_variants"):
+        failures.append(
+            f"No variant of '{subject}' is unique to them in the roster, so every "
+            f"document a label would rest on could be about somebody else. There is "
+            f"nothing to score against. Pick a subject whose name is not shared."
         )
     return failures
 
@@ -80,12 +84,9 @@ def alias_set_failures(aliases):
 def _substring_pattern(aliases):
     """A looser pattern than the masker uses, for reporting only.
 
-    The audit and the masker share one pattern, so the audit is blind to
-    anything the pattern cannot see: a boundary rule that skips a name also
-    skips it on the way back out. This ignores word boundaries entirely and
-    reports what it finds without failing the run, so that class of miss shows
-    up as a number a human can look at rather than as silence. It over-reports
-    by construction (a four-letter surname matches inside longer words).
+    The audit shares the masker's pattern, so a boundary rule that skips a name
+    skips it on the way back out too. This ignores boundaries entirely and only
+    reports, since it over-reports by construction.
     """
     names = [n for n in (aliases or {}).get("name_variants") or [] if len(n) >= 4]
     if not names:
