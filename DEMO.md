@@ -3,6 +3,10 @@
 The commands to run a full erasure against real US court opinions, in order,
 and what each one does. Run everything from the repo root.
 
+This is the command-line reference. To see the skill used the way it is meant to
+be, by describing the request in your own words and letting the agent run these
+phases, start with [`DEMO-AGENT.md`](DEMO-AGENT.md).
+
 Requires Docker, `uv`, and network access to `storage.courtlistener.com`.
 
 Court opinions are used rather than the Enron email corpus because opinions
@@ -295,7 +299,6 @@ uv run python scripts/forget_me.py export-curl \
   --action-type redact_in_place \
   --index "case-law" \
   --profile "Boyd Van Gordon, plaintiff in a 1900s Nelson county contract action" \
-  --legal-hold "billing-*,retention-*" \
   --out forget-me.sh
 ```
 
@@ -339,22 +342,7 @@ Changes nothing in OpenSearch. The skill never writes to the cluster; you review
 the script and run it.
 
 `--action-type hard_delete` emits `DELETE` commands instead of Painless
-redactions. `--legal-hold` takes comma-separated index globs and refuses the
-export if any flagged document matches:
-
-```bash
-uv run python scripts/forget_me.py export-curl \
-  --evaluations @direct.json --candidates @direct.json \
-  --index "case-law" --legal-hold "case-*" --out blocked.sh
-```
-
-```json
-{
-  "ok": false,
-  "error": "Document cl-6848497-6735923 is in 'case-law', which matches legal-hold pattern 'case-*'. Erasure refused. Remove the hold or exclude this index before proceeding.",
-  "legal_hold_violation": true
-}
-```
+redactions.
 
 ## 10. Review, apply, and verify
 
@@ -481,7 +469,7 @@ From there the steps are identical, against `logs-application-demo`.
 | Hybrid search finds what keyword search misses | **not shown** | 53.1% against BM25's 50.9% at k=50 over 2,692 subjects, intervals overlapping; BM25 wins outright at k=1 |
 | Reasons over candidates and picks the right person | **yes, on synthetic data** | precision 1.00, recall 0.91, zero false positives across eight decoy categories varying one marker each; untested on real prose |
 | Removes what it flags | **yes** | 11 of 11 redaction spans verbatim, so none silently fail; over-redaction averages 7.2% of a document |
-| Never writes to your cluster, one command per document, refuses legal holds, chains the certificate | **yes** | true by construction and visible in the generated script |
+| Never writes to your cluster, one command per document, chains the certificate | **yes** | true by construction and visible in the generated script |
 
 The erasure machinery works and the direct pass has no caveats. The indirect
 pass works where documents describe people, which court opinions do and email

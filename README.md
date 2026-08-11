@@ -8,8 +8,10 @@ your cluster through ML Commons, so text never leaves your boundary. It runs on
 any OpenSearch distribution (self-managed, Amazon OpenSearch Service, or
 Serverless) and falls back to BM25 when no model is available.
 
-> **Want to run it?** [`DEMO.md`](DEMO.md) lists every command in order, from
-> starting OpenSearch to a verified erasure with an audit certificate.
+> **Want to run it?** [`DEMO-AGENT.md`](DEMO-AGENT.md) drives the skill by
+> prompt, the way it is meant to be used. [`DEMO.md`](DEMO.md) is the same
+> workflow at the command line, from starting OpenSearch to a verified erasure
+> with an audit certificate.
 
 ## The problem
 
