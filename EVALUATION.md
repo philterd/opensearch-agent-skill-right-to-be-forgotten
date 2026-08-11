@@ -10,8 +10,9 @@ resulting numbers do and do not tell you.
 > `score-judgment` score the three pipeline stages. The demo corpus in
 > `scripts/seed_demo.py` still carries hand-built labels.
 >
-> Everything below marked **Measured** is a figure from a real run against the
-> full 517,394-message corpus, not an estimate.
+> Everything below marked **Measured** is a figure from a real run, not an
+> estimate: against the full 517,394-message Enron corpus unless the surrounding
+> text names another corpus.
 
 ## Why this needs a document
 
@@ -373,6 +374,54 @@ capability elsewhere, on documents written to describe people.
 became public because of an investigation into others. Report aggregate metrics.
 Do not publish reconstructed profiles of individuals, and do not reproduce more
 personal data than a finding requires.
+
+## Choosing a corpus, and what US case law measured
+
+Enron failed on the describing channel, not the naming one. That makes corpus
+choice the first decision, and one question settles it: not whether the text
+describes people, which is common, but whether a structured record says who
+each description is about, held out of the searched text.
+
+Measured against that test:
+
+| Corpus | Describes people | Naming channel | Verdict |
+| :--- | :--- | :--- | :--- |
+| Enron email | 0.39% role language | headers | fails on descriptions |
+| Wikipedia | yes, in biographies | wikilinks | 0 descriptive person anchors in 160 articles; house style names people |
+| ASRS aviation reports | richly | none, de-identified by design | no labels; usable only as a specificity check |
+| SRE postmortems, chat logs, peer review | varies | role-anonymised, or the subject is not a person | no labels |
+| MIMIC-III | yes, and uniqueness is exactly computable | `subject_id` and structured tables | best fit; credentialed access, and its DUA forbids re-identification |
+| US case law (CourtListener) | 40% role language | case caption | usable, with caveats below |
+
+**Measured** on a 40Mb slice of the CourtListener bulk opinions export, 7,535
+opinions: 40% carry a party-role reference, every one joined to its caption,
+88% of those captions yield a person party, and 82% of bodies also name that
+party, so masking is still required. After masking, 76% remain descriptions of
+a person, with a median of 18,917 characters of surviving text. Against Enron's
+0.39% and seven distinct descriptive documents for a well-chosen subject, that
+is the corpus difference in one line.
+
+Three cautions on those numbers. The 76% used a crude surname-only mask, so it
+is optimistic; a full alias set removes more. A wider role pattern including
+officer, witness and treating physician gives 51.7% rather than 40%, so state
+which pattern a density figure used. And the sample is id-ordered, so it skews
+to particular courts and eras.
+
+Case law also changes the shape of the measurement. 79% of parties appear in
+exactly one opinion, so per-subject recall is 0% or 100% and meaningless.
+Score across subjects instead: roughly 1,800 subjects with one document each
+gives a hit-rate whose interval is a couple of points, where one subject with
+76 positives gave plus or minus ten.
+
+**What it cannot settle.** Nobody files an erasure request against a published
+opinion, so the use case does not apply to the corpus. "The defendant" resolves
+to the caption of the same document, so masking manufactures the difficulty
+again, as it did on Enron. And one document per person is not the scattered
+footprint the skill exists to erase. Case law is a good place to measure the
+mechanism. It is not evidence that operational corpora, the logs and tickets
+and reviews customers actually hold, describe people indirectly often enough
+for the indirect pass to matter. That question is still open, and the only
+operational corpus measured so far answered no.
 
 ## Applying it generically
 
