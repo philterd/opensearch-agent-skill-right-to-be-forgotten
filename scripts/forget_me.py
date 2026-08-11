@@ -15,6 +15,7 @@ Commands:
     setup          Bootstrap cluster (if needed) + deploy embedding model & pipelines
     seed-demo      Load the synthetic multi-index demo dataset
     seed-enron     Load a subset of the real Enron email corpus (fetched from CMU)
+    seed-courtlistener Load US court opinions (fetched from CourtListener)
     discover       Phase 1: hybrid BM25 + neural retrieval of candidate documents
     discover-direct Phase 1b: find docs containing the subject's direct identifiers
     evaluate       Phase 2 (optional headless): score candidates via a configured LLM
@@ -152,6 +153,19 @@ def cmd_seed_enron(args):
     _out({"ok": True, **result})
 
 
+def cmd_seed_courtlistener(args):
+    from lib.client import create_client
+    import seed_courtlistener
+    client = create_client(bootstrap=True)
+    result = seed_courtlistener.load(
+        client, cache_dir=args.cache_dir, limit=args.limit, slice_mb=args.slice_mb,
+        max_chars=args.max_chars, setup_neural=not args.no_neural,
+        text_field=args.text_field, embedding_field=args.embedding_field,
+        index=args.index, mask=args.mask, split=args.split,
+    )
+    _out({"ok": True, **result})
+
+
 def cmd_discover(args):
     from lib.client import create_client
     from lib.discovery import discover
@@ -169,7 +183,37 @@ def cmd_discover(args):
         model_id=model_id,
         size=args.size,
     )
-    _out({"ok": True, "meta": meta, "candidate_count": len(candidates), "candidates": candidates})
+    out = {"ok": True, "meta": meta, "candidate_count": len(candidates),
+           "candidates": candidates}
+    if not args.no_assess:
+        out["applicability"] = _applicability(client, args.index, args.text_field,
+                                              len(candidates))
+    _out(out)
+
+
+def _applicability(client, index, text_field, candidate_count, sample=300):
+    """Why an indirect result looks the way it does.
+
+    An empty candidate list means "this corpus does not describe people" as
+    often as it means "this person is not here", and the two read identically.
+    Measured on a real email corpus at 0.20 descriptive references per document,
+    the indirect pass returned nothing; reported bare that is a clean bill of
+    health, which is the opposite of the truth.
+    """
+    from lib import suitability
+    try:
+        report = suitability.assess(client, index, text_field=text_field, sample=sample)
+    except Exception as e:  # noqa: BLE001 - never let this break discovery
+        return {"assessed": False, "reason": f"{type(e).__name__}: {e}"}
+    band = report["verdict"]["material_for_indirect_pass"]
+    return {
+        "assessed": True,
+        "material_for_indirect_pass": band,
+        "references_per_document": report["references_per_document"],
+        "documents_sampled": report["documents_sampled"],
+        "documents_describing_a_person": report["describing_a_person"]["documents"],
+        "note": suitability.applicability_note(band, candidate_count),
+    }
 
 
 def cmd_discover_direct(args):
@@ -182,10 +226,13 @@ def cmd_discover_direct(args):
     )
     if not identifiers:
         _fail("Provide at least one identifier: --email/--phone/--ip/--name/--id/--term.")
+    fields = _parse_list(args.identity_fields) if args.identity_fields else None
+    if args.no_identity_fields:
+        fields = []
     candidates, evaluations, meta = discover_direct(
         client, index_pattern=args.index, identifiers=identifiers,
         text_field=args.text_field, timestamp_field=args.timestamp_field,
-        size=args.size, scan_pii=not args.no_scan_pii,
+        size=args.size, scan_pii=not args.no_scan_pii, identity_fields=fields,
     )
     _out({"ok": True, "meta": meta, "candidate_count": len(candidates),
           "candidates": candidates, "evaluations": evaluations})
@@ -711,6 +758,22 @@ def build_parser():
                     help="Seed plain BM25 data without deploying the embedding model")
     sp.set_defaults(func=cmd_seed_enron)
 
+    sp = sub.add_parser("seed-courtlistener")
+    add_field_opts(sp)
+    sp.add_argument("--index", default="case-law")
+    sp.add_argument("--limit", type=int, default=2000,
+                    help="Opinions carrying role language to index (default 2000)")
+    sp.add_argument("--slice-mb", type=int, default=40,
+                    help="Compressed megabytes of the bulk export to cache (default 40)")
+    sp.add_argument("--max-chars", type=int, default=8000)
+    sp.add_argument("--cache-dir", default="gdpr-eval/courtlistener")
+    sp.add_argument("--mask", action="store_true",
+                    help="Evaluation: remove every personal party from the text")
+    sp.add_argument("--split", action="store_true",
+                    help="Evaluation: halve each opinion into two documents")
+    sp.add_argument("--no-neural", action="store_true")
+    sp.set_defaults(func=cmd_seed_courtlistener)
+
     sp = sub.add_parser("discover")
     sp.add_argument("--index", required=True)
     sp.add_argument("--profile", required=True)
@@ -720,6 +783,8 @@ def build_parser():
                     help="Candidates to retrieve (default 100). Recall rises with depth: measured 41.7%% at k=10 against 49.7%% at k=50")
     sp.add_argument("--model-id", default=None)
     sp.add_argument("--timestamp-field", default="@timestamp")
+    sp.add_argument("--no-assess", action="store_true",
+                    help="Skip the corpus-suitability check that explains a thin result")
     add_field_opts(sp)
     sp.set_defaults(func=cmd_discover)
 
@@ -735,6 +800,11 @@ def build_parser():
     sp.add_argument("--timestamp-field", default="@timestamp")
     sp.add_argument("--no-scan-pii", action="store_true",
                     help="Do not also redact other PII co-located in matched docs")
+    sp.add_argument("--identity-fields", default=None,
+                    help="Comma-separated fields recording who a document is about "
+                         "(default: detected from the mapping)")
+    sp.add_argument("--no-identity-fields", action="store_true",
+                    help="Search only the text field, as before")
     sp.add_argument("--text-field", default="message")
     sp.set_defaults(func=cmd_discover_direct)
 

@@ -53,6 +53,16 @@ def test_identity_looking_fields_are_found():
     assert fields == ["assignee", "created_by", "user.id"]
 
 
+def test_an_unindexed_field_is_reported_but_not_searchable():
+    """seed_enron maps the X- headers index:false; querying one is a 400."""
+    props = {"message": {"type": "text"},
+             "x_to": {"type": "keyword", "index": False},
+             "to": {"type": "keyword"}}
+    by_field = {f["field"]: f for f in suitability.naming_channel(props, "message")}
+    assert by_field["x_to"]["searchable"] is False
+    assert by_field["to"]["searchable"] is True
+
+
 def test_the_searched_field_is_never_a_naming_channel():
     props = {"from": {"type": "text"}}
     assert suitability.naming_channel(props, "from") == []
@@ -144,3 +154,26 @@ def test_assess_reports_an_unusable_corpus():
 def test_assess_skips_empty_documents():
     client = _FakeClient(["", "   ", "the analyst who filed it"], {"message": {"type": "text"}})
     assert suitability.assess(client, "x")["documents_sampled"] == 1
+
+
+# --- how to read an indirect result ------------------------------------------ #
+
+def test_an_empty_result_on_a_thin_corpus_must_be_explained():
+    note = suitability.applicability_note("absent", candidate_count=0)
+    assert "property of the corpus" in note
+    assert "No candidates were returned" in note
+
+
+def test_an_empty_result_on_a_rich_corpus_needs_no_excuse():
+    note = suitability.applicability_note("rich", candidate_count=0)
+    assert "about the subject" in note
+    assert "No candidates were returned" not in note
+
+
+def test_a_sparse_corpus_names_the_ceiling():
+    assert "ceiling" in suitability.applicability_note("sparse", candidate_count=12)
+
+
+def test_every_band_has_a_note():
+    for band in ("rich", "sparse", "absent"):
+        assert suitability.applicability_note(band, 5)

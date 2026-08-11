@@ -34,6 +34,44 @@ _REDACT_PAINLESS = (
     " ctx._source[params.field] = v; }"
 )
 
+# Painless: redact identity fields, where the personal data is the field value
+# rather than a substring of prose. Handles arrays, because a recipient list is
+# one. The whole element is replaced rather than the matched substring, since
+# "Lynn Blair <lynn.blair@enron.com>" is personal data in both halves. Matching
+# is case-insensitive: headers vary in case where message text does not.
+_REDACT_FIELDS_PAINLESS = (
+    # entrySet() is required: Painless cannot iterate a Map directly.
+    "for (entry in params.fields.entrySet()) {"
+    " String f = entry.getKey();"
+    " if (!ctx._source.containsKey(f) || ctx._source[f] == null) { continue; }"
+    " def current = ctx._source[f];"
+    " if (current instanceof List) {"
+    "  def out = new ArrayList();"
+    "  for (item in current) {"
+    "   String sv = item.toString(); boolean hit = false;"
+    "   for (needle in entry.getValue()) {"
+    "    if (sv.toLowerCase().contains(needle.toLowerCase())) { hit = true; break; } }"
+    "   out.add(hit ? params.redaction : sv); }"
+    "  ctx._source[f] = out;"
+    " } else {"
+    "  String sv = current.toString(); boolean hit = false;"
+    "  for (needle in entry.getValue()) {"
+    "   if (sv.toLowerCase().contains(needle.toLowerCase())) { hit = true; break; } }"
+    "  if (hit) { ctx._source[f] = params.redaction; } } }"
+)
+
+
+def field_values(item):
+    """{field: [values]} the subject occupies, from `identifying_fields`."""
+    grouped = {}
+    for hit in item.get("identifying_fields") or []:
+        field, value = hit.get("field"), hit.get("matched") or hit.get("value")
+        if field and value:
+            grouped.setdefault(field, [])
+            if value not in grouped[field]:
+                grouped[field].append(value)
+    return grouped
+
 
 class LegalHoldError(RuntimeError):
     pass
@@ -63,17 +101,22 @@ def build_action_plan(flagged, action_type, text_field="message", redaction_toke
             "index": item.get("index"),
             "confidence_score": item.get("confidence_score"),
         }
+        fields = field_values(item)
         if action_type == "redact_in_place":
             op["action"] = "redact"
             op["field"] = text_field
             op["snippets"] = item.get("identifying_snippets", [])
             op["redaction_token"] = redaction_token
+            if fields:
+                op["identity_fields"] = fields
         elif action_type == "hard_delete":
             op["action"] = "delete"
         else:  # dry_run previews what redact_in_place would do
             op["action"] = "preview_redact"
             op["field"] = text_field
             op["snippets"] = item.get("identifying_snippets", [])
+            if fields:
+                op["identity_fields"] = fields
         operations.append(op)
 
     return {
@@ -155,30 +198,37 @@ def build_curl_script(flagged, action_type, text_field="message",
                 f'curl -sS $CURL_OPTS -X DELETE "$OS/{idx_u}/_doc/{doc_u}?refresh=true"'
             )
         else:  # redact_in_place
-            body = {
-                "script": {
-                    "lang": "painless",
-                    "source": _REDACT_PAINLESS,
-                    "params": {
-                        "field": text_field,
-                        "redaction": redaction_token,
-                        "snippets": item.get("identifying_snippets", []),
-                    },
-                }
-            }
-            lines.append(
-                f'curl -sS $CURL_OPTS -X POST "$OS/{idx_u}/_update/{doc_u}?refresh=true" \\'
-            )
-            lines.append("  -H 'Content-Type: application/json' --data-binary @- <<'JSON'")
-            lines.append(_json.dumps(body, indent=2))
-            lines.append("JSON")
+            snippets = item.get("identifying_snippets", [])
+            fields = field_values(item)
+            if snippets:
+                body = {"script": {"lang": "painless", "source": _REDACT_PAINLESS,
+                                   "params": {"field": text_field,
+                                              "redaction": redaction_token,
+                                              "snippets": snippets}}}
+                lines.append(
+                    f'curl -sS $CURL_OPTS -X POST "$OS/{idx_u}/_update/{doc_u}?refresh=true" \\')
+                lines.append("  -H 'Content-Type: application/json' --data-binary @- <<'JSON'")
+                lines.append(_json.dumps(body, indent=2))
+                lines.append("JSON")
+            if fields:
+                lines.append(f"# identity fields: {', '.join(sorted(fields))}")
+                body = {"script": {"lang": "painless", "source": _REDACT_FIELDS_PAINLESS,
+                                   "params": {"redaction": redaction_token,
+                                              "fields": fields}}}
+                lines.append(
+                    f'curl -sS $CURL_OPTS -X POST "$OS/{idx_u}/_update/{doc_u}?refresh=true" \\')
+                lines.append("  -H 'Content-Type: application/json' --data-binary @- <<'JSON'")
+                lines.append(_json.dumps(body, indent=2))
+                lines.append("JSON")
         lines.append("")
 
     lines.append("# --- verification (read back the affected documents) ---")
     for item in flagged:
         idx_u, doc_u = _url_path(item.get("index")), _url_path(item.get("doc_id"))
+        sources = [text_field] + sorted(field_values(item))
         lines.append(
-            f'curl -sS $CURL_OPTS "$OS/{idx_u}/_doc/{doc_u}?_source={_url_path(text_field)}"; echo'
+            f'curl -sS $CURL_OPTS "$OS/{idx_u}/_doc/{doc_u}'
+            f'?_source={_url_path(",".join(sources))}"; echo'
         )
     lines.append("")
     return "\n".join(lines)

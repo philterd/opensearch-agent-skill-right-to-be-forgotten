@@ -16,7 +16,13 @@ _ROLE = re.compile(
     r"[,;]?\s*\b(?:defendants?|plaintiffs?|appell(?:ants?|ees?)|petitioners?|"
     r"respondents?|movants?|intervenors?|claimants?|garnishees?|relators?|"
     r"cross[-\s]?\w+|et\s+al|et\s+ux|pro\s+se|individually|d/b/a|a/k/a|"
+    r"attorney\s+general|solicitor\s+general|district\s+attorney|"
+    # Delaware styles divorce captions "Husband v. Wife"; the party is anonymous.
+    r"husband|wife|minor\s+child|next\s+friend|guardian\s+ad\s+litem|"
     r"in\s+his\s+\w+\s+capacity|in\s+her\s+\w+\s+capacity)\b\.?", re.I)
+
+# "the STATE of Texas" would otherwise read as a person headed by "the".
+_ARTICLE = re.compile(r"^(?:the|a|an)\s+", re.I)
 
 _SUFFIX = re.compile(r"[,\s]+\b(?:jr|sr|ii|iii|iv|esq|md|phd)\b\.?$", re.I)
 
@@ -56,7 +62,37 @@ def _clean_party(text):
     text = _ROLE.sub(" ", text or "")
     text = re.sub(r"[\s\-]{2,}", " ", text)
     text = re.sub(r"\s{2,}", " ", text).strip(" ,;.-")
+    text = _ARTICLE.sub("", text)
     return _SUFFIX.sub("", text).strip(" ,;.-")
+
+
+def _person_part(party):
+    """Trim an institution appended to a person, or return [] if it leads.
+
+    Captions concatenate parties and offices into one string, comma delimited:
+    "James E. Gaines, United States of America" holds two parties, and
+    "Alexander M. Hunter, Twentieth Judicial District, Boulder, Colorado"
+    trails a court and a place. Cut at the first comma-delimited segment that
+    names an institution, which is the unit captions actually use.
+    """
+    segments = [seg.strip() for seg in (party or "").split(",") if seg.strip()]
+    if not segments:
+        return []
+    kept = []
+    for segment in segments:
+        tokens = _tokens(segment)
+        heads = [i for i, t in enumerate(tokens) if t.lower() in INSTITUTIONAL_HEAD]
+        if heads:
+            if not kept and heads[0] == 0:
+                return []                       # the institution leads
+            if not kept:
+                # Institution inside the first segment: keep what precedes it,
+                # but only if that still looks like a name rather than an
+                # adjective, so "British Government General" yields nothing.
+                return tokens[:heads[0]] if heads[0] >= 2 else []
+            break                               # a later segment: stop here
+        kept.extend(tokens)
+    return kept
 
 
 def parse_caption(caption):
@@ -74,14 +110,16 @@ def is_organisation(party):
     tokens = [t.lower() for t in _tokens(party)]
     if not tokens:
         return True
-    return tokens[0] in INSTITUTIONAL_HEAD or any(t in CORPORATE for t in tokens)
+    if any(t in CORPORATE for t in tokens):
+        return True
+    return not _person_part(party)
 
 
 def surname_of(party):
     """The token an opinion would use for this party, or "" if it is not a person."""
     if is_organisation(party):
         return ""
-    tokens = _tokens(_SUFFIX.sub("", party or ""))
+    tokens = _person_part(_SUFFIX.sub("", party or ""))
     if not tokens:
         return ""
     surname = tokens[-1]
@@ -106,7 +144,7 @@ def given_names(caption):
     for party in parse_caption(caption):
         if is_organisation(party):
             continue
-        tokens = _tokens(party)
+        tokens = _person_part(party)
         if len(tokens) >= 2 and re.match(r"^[A-Z][a-z]{2,}$", tokens[0]):
             out.append(tokens[0])
     return out

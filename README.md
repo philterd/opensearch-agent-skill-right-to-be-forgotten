@@ -36,8 +36,10 @@ Turns any Agent-Skills-compatible IDE (Claude Code, Cursor, Kiro, Copilot,
 Windsurf, Gemini CLI, Codex) into a privacy-engineering agent that:
 
 1. **Discovers** candidates two ways: a direct-identifier pass (name, email,
-   employee id, phone, IP) for literal hits, and hybrid BM25 plus neural/vector
-   search for name-free descriptions.
+   employee id, phone, IP) that searches both the text and the fields recording
+   who a document is about, and hybrid BM25 plus neural/vector search for
+   name-free descriptions. Searching text alone found 3% of one subject's
+   footprint in a real email corpus; the rest was in `from`, `to` and `cc`.
 2. **Disambiguates** each candidate by reasoning about whether it uniquely
    identifies the subject, scoring confidence and extracting exact identifying
    snippets. A `precision_mode` threshold controls precision versus recall.

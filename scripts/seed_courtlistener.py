@@ -193,13 +193,14 @@ def split_halves(text):
 
 
 def build_documents(cache_dir, limit=DEFAULT_LIMIT, slice_mb=DEFAULT_SLICE_MB,
-                    max_chars=DEFAULT_MAX_CHARS, mask=True, split=True,
+                    max_chars=DEFAULT_MAX_CHARS, mask=False, split=False,
                     min_half=300):
     """Return (documents, stats). Text and captions stay in separate fields.
 
-    With ``mask``, every personal party is removed from the text; the caption
-    lives on in its own unindexed field as the label. With ``split``, each
-    opinion becomes two documents sharing a subject id.
+    Defaults to the corpus as published, which is what a demo or a real
+    deployment wants. ``mask`` and ``split`` produce the evaluation artifact
+    instead: parties removed from the text, each opinion halved so a profile
+    built on one half can be scored against the other.
     """
     from lib import caselaw, masking
 
@@ -266,7 +267,7 @@ def build_documents(cache_dir, limit=DEFAULT_LIMIT, slice_mb=DEFAULT_SLICE_MB,
 def load(client, cache_dir=DEFAULT_CACHE, limit=DEFAULT_LIMIT,
          slice_mb=DEFAULT_SLICE_MB, max_chars=DEFAULT_MAX_CHARS, setup_neural=True,
          text_field="message", embedding_field="message_embedding", index=CASELAW_INDEX,
-         mask=True, split=True):
+         mask=False, split=False):
     """(Re)create the case-law index and load role-bearing opinions."""
     from lib.model import setup_neural_search, create_knn_index
 
@@ -336,10 +337,10 @@ if __name__ == "__main__":
                     help="Compressed megabytes of the opinions export to cache")
     ap.add_argument("--max-chars", type=int, default=DEFAULT_MAX_CHARS)
     ap.add_argument("--cache-dir", default=DEFAULT_CACHE)
-    ap.add_argument("--no-mask", action="store_true",
-                    help="Leave party names in the text (labels become unusable)")
-    ap.add_argument("--no-split", action="store_true",
-                    help="One document per opinion instead of two halves")
+    ap.add_argument("--mask", action="store_true",
+                    help="Evaluation: remove every personal party from the text")
+    ap.add_argument("--split", action="store_true",
+                    help="Evaluation: halve each opinion into two documents")
     ap.add_argument("--no-neural", action="store_true")
     ap.add_argument("--dry-run", action="store_true",
                     help="Build documents and print a sample without touching OpenSearch")
@@ -347,7 +348,7 @@ if __name__ == "__main__":
 
     if a.dry_run:
         docs, stats = build_documents(a.cache_dir, a.limit, a.slice_mb, a.max_chars,
-                                      mask=not a.no_mask, split=not a.no_split)
+                                      mask=a.mask, split=a.split)
         print(json.dumps({**stats, "sample": [
             {"doc_id": i, "case_name": s["case_name"],
              "party_surnames": s["party_surnames"],
@@ -357,5 +358,5 @@ if __name__ == "__main__":
     from lib.client import create_client
     print(json.dumps(load(create_client(bootstrap=True), cache_dir=a.cache_dir,
                           limit=a.limit, slice_mb=a.slice_mb, max_chars=a.max_chars,
-                          setup_neural=not a.no_neural, mask=not a.no_mask,
-                          split=not a.no_split), indent=2))
+                          setup_neural=not a.no_neural, mask=a.mask,
+                          split=a.split), indent=2))

@@ -73,7 +73,7 @@ Collect these from the user (ask for anything missing):
 Follow these phases in order. Between steps, persist JSON to files in a scratch
 directory and pass them with `@path` so nothing is lost.
 
-### Phase 0 — Connectivity & model
+### Phase 0: connectivity, model, and whether the indirect pass applies
 
 ```bash
 uv run python scripts/forget_me.py status
@@ -85,6 +85,32 @@ If no cluster is reachable, or you need neural search on the demo, run setup
 ```bash
 uv run python scripts/forget_me.py setup
 ```
+
+**Then check the corpus before searching it.** The direct pass works wherever
+identifiers appear literally. The indirect pass only finds people where
+documents *describe* them, and corpora differ by two orders of magnitude in
+whether they do:
+
+```bash
+uv run python scripts/forget_me.py assess --index "logs-application-*"
+```
+
+Read `verdict.material_for_indirect_pass`:
+
+- **`rich`**: proceed with both passes.
+- **`sparse`**: proceed, but say in the report how many documents carry a
+  description at all, because that is the ceiling on what Phase 1's hybrid
+  search can return.
+- **`absent`**: tell the user before running anything else. An empty flagged
+  set on such an index means "this data does not describe people", not "this
+  person has no personal data here". Run the direct pass, report the indirect
+  pass as not applicable, and say why.
+
+Never let an empty indirect result stand as a finding without the assessment
+beside it. On a real email corpus measuring 0.20 descriptive references per
+document, the indirect pass flagged nothing at the default threshold; reported
+bare, that reads as a clean bill of health when it is a statement about the
+corpus.
 
 > **Demo:** to create the synthetic story dataset, run
 > `uv run python scripts/forget_me.py seed-demo`. It prints a
@@ -134,11 +160,20 @@ uv run python scripts/forget_me.py discover-direct \
   > direct.json
 ```
 
-`discover-direct` returns `candidates` and ready-made `evaluations` that are
-already flagged at confidence 1.0, with the matched values (and any other PII it
-finds co-located in the same document) as `identifying_snippets`. It needs no
-Phase 2 judgment. Pass `direct.json` straight to `plan` / `export-curl`, the
-same way you pass the agent's `evaluations.json`.
+`discover-direct` searches the text field **and the identity fields that record
+who a document is about** (`from`, `to`, `cc`, `custodian`, `user.id`,
+`assignee`, and similar), detected from the mapping. This matters more than it
+sounds: on a real email corpus one subject's address appeared in 94 message
+bodies and 3,692 header fields, so searching text alone found 3% of their
+footprint. Override with `--identity-fields`, or restore the old behaviour with
+`--no-identity-fields`.
+
+It returns `candidates` and ready-made `evaluations` flagged at confidence 1.0,
+with matched values (and any other PII co-located in the document) as
+`identifying_snippets`, and structural matches as `identifying_fields`. It needs
+no Phase 2 judgment. Pass `direct.json` straight to `plan` / `export-curl`.
+
+`meta.flagged_by_field_only` counts documents that match only structurally.
 
 Direct and indirect are complementary: use both, then treat the union of flagged
 documents as the full erasure set. The direct pass catches the easy literal hits;
@@ -230,9 +265,13 @@ and to confirm.
 The skill never writes to OpenSearch itself. It generates a script the human
 reviews and runs. Two action types:
 
-- **`redact_in_place` (recommended):** replaces only the identifying snippets
-  with `[GDPR_REDACTED]` via a Painless script, preserving the rest of each
-  operational record.
+- **`redact_in_place` (recommended):** replaces the identifying snippets in the
+  text field with `[GDPR_REDACTED]` via a Painless script, and replaces the
+  subject's value in any identity field naming them, preserving the rest of each
+  operational record. The whole field value goes, since
+  `Lynn Blair <lynn.blair@enron.com>` is personal data in both halves, and a
+  matching element of a recipient list is replaced without changing the list's
+  length. A document matching in both text and fields gets two updates.
 - **`hard_delete`:** removes the whole document.
 
 ```bash
@@ -282,6 +321,7 @@ Always summarize each run as:
 **Target Subject:** "<target_profile>"
 **Indices Scanned:** `<index_pattern>`
 **Search Mode:** hybrid | bm25_fallback
+**Corpus suitability:** `<rich|sparse|absent>` (<n> descriptive references per document)
 **Precision Mode:** `<mode>` (threshold: <t>)
 **Action:** REDACT_IN_PLACE (or HARD_DELETE) — curl script generated, nothing applied yet
 
@@ -290,6 +330,13 @@ Always summarize each run as:
 | Doc ID | Confidence | Identifying Snippet | Reasoning |
 | :--- | :--- | :--- | :--- |
 | `sub-1` | **0.92** | *"lead frontend engineer who owned the Checkout service ... during the #4091 outage"* | Unique role + specific incident. |
+
+#### Indirect pass applicability
+
+State this whenever the indirect pass returns few or no documents: `<band>`,
+`<n>` references per document, `<m>` of the sampled documents carry a
+description. Where the band is `absent`, say plainly that the indirect result is
+a property of the corpus rather than of the subject.
 
 #### Generated remediation
 - Reviewable script: `forget-me.sh` (run it yourself to apply; includes read-back verification)
@@ -312,6 +359,9 @@ Always summarize each run as:
    the generated commands target documents by exact `(index, _id)`.
 5. **Every run is recorded.** `export-curl` writes a local, hash-chained erasure
    certificate; verify it with `verify-chain`.
+6. **Never report an empty indirect result without its assessment.** "Nothing
+   found" and "this corpus does not describe people" look identical in the
+   output and mean opposite things to a compliance reader.
 
 ## Command reference
 

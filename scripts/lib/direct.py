@@ -64,13 +64,57 @@ def normalize_identifiers(email=None, phone=None, ip=None, name=None, id=None, t
     return identifiers
 
 
-def build_direct_query(identifiers, text_field, size):
-    """Bool-should of exact phrase matches for each identifier value."""
+def build_direct_query(identifiers, text_field, size, identity_fields=()):
+    """Bool-should of matches for each identifier, across text and identity fields.
+
+    Searching only the text field misses the person wherever the corpus records
+    them structurally instead of mentioning them. Measured on Enron, one
+    subject's address appears in 94 message bodies and 3,692 header fields, so
+    a text-only pass found 3% of their footprint.
+
+    Identity fields are keyword-typed, so an analyzer phrase match does not
+    apply: `term` catches a field holding the bare value and a case-insensitive
+    `wildcard` catches it embedded in a longer one such as `Name <addr>`.
+    """
     shoulds = [{"match_phrase": {text_field: ident["value"]}} for ident in identifiers]
+    for field in identity_fields:
+        for ident in identifiers:
+            value = ident["value"]
+            shoulds.append({"term": {field: value}})
+            shoulds.append({"wildcard": {field: {"value": f"*{value}*",
+                                                 "case_insensitive": True}}})
     return {
         "size": size,
         "query": {"bool": {"should": shoulds, "minimum_should_match": 1}},
     }
+
+
+def identity_fields_of(client, index_pattern, text_field):
+    """Identity-bearing fields in the mapping, excluding the searched text."""
+    from lib.suitability import naming_channel
+    properties = {}
+    for body in client.indices.get_mapping(index=index_pattern).values():
+        properties.update((body.get("mappings") or {}).get("properties") or {})
+    # An unindexed field can label an answer but cannot be queried.
+    return [f["field"] for f in naming_channel(properties, text_field) if f["searchable"]]
+
+
+def _field_matches(source, identifiers, fields):
+    """Which identity fields hold which identifier value, verbatim."""
+    found = []
+    for field in fields:
+        value = source.get(field)
+        if value is None:
+            continue
+        values = value if isinstance(value, list) else [value]
+        for ident in identifiers:
+            needle = ident["value"].lower()
+            for entry in values:
+                if needle in str(entry).lower():
+                    found.append({"field": field, "value": str(entry),
+                                  "matched": ident["value"], "type": ident["type"]})
+                    break
+    return found
 
 
 def _find_verbatim(text, value):
@@ -82,7 +126,8 @@ def _find_verbatim(text, value):
 
 
 def discover_direct(client, index_pattern, identifiers, text_field="message",
-                    timestamp_field="@timestamp", size=200, scan_pii=True):
+                    timestamp_field="@timestamp", size=200, scan_pii=True,
+                    identity_fields=None):
     """Find documents containing the subject's direct identifiers.
 
     Returns (candidates, evaluations, meta). Evaluations for matched documents
@@ -95,7 +140,12 @@ def discover_direct(client, index_pattern, identifiers, text_field="message",
         return [], [], {"mode": "direct", "reason": "no identifiers supplied",
                         "total_candidates": 0}
 
-    body = build_direct_query(identifiers, text_field, size)
+    if identity_fields is None:
+        try:
+            identity_fields = identity_fields_of(client, index_pattern, text_field)
+        except Exception:  # noqa: BLE001 - a mapping failure must not stop the pass
+            identity_fields = []
+    body = build_direct_query(identifiers, text_field, size, identity_fields)
     resp = client.search(index=index_pattern, body=body)
     hits = resp.get("hits", {}).get("hits", [])
 
@@ -119,25 +169,47 @@ def discover_direct(client, index_pattern, identifiers, text_field="message",
                     snippets.append(pii["value"])
                     matched_types.append(pii["type"])
 
-        if snippets:
+        field_hits = _field_matches(src, identifiers, identity_fields)
+        if field_hits:
+            matched_types.extend(h["type"] for h in field_hits)
+
+        if snippets or field_hits:
+            where = []
+            if snippets:
+                where.append(f"in {text_field}")
+            if field_hits:
+                where.append("in " + ", ".join(sorted({h["field"] for h in field_hits})))
             evaluations.append({
                 "doc_id": doc_id, "index": index, "text": text,
                 "timestamp": src.get(timestamp_field),
                 "is_identifiable": True, "confidence_score": 1.0,
                 "identifying_snippets": snippets,
-                "reasoning": f"Direct identifier match ({', '.join(sorted(set(matched_types)))}).",
+                "identifying_fields": field_hits,
+                "reasoning": (f"Direct identifier match "
+                              f"({', '.join(sorted(set(matched_types)))}) "
+                              f"{' and '.join(where)}."),
             })
         else:
             evaluations.append({"doc_id": doc_id, "is_identifiable": False,
                                 "confidence_score": 0.0, "identifying_snippets": [],
                                 "reasoning": "Matched by the analyzer but no verbatim identifier present."})
 
+    field_only = sum(1 for e in evaluations
+                     if e.get("identifying_fields") and not e.get("identifying_snippets"))
     meta = {
         "mode": "direct",
         "index_pattern": index_pattern,
         "identifier_count": len(identifiers),
+        "identity_fields_searched": list(identity_fields),
         "total_candidates": len(candidates),
         "flagged": sum(1 for e in evaluations if e["is_identifiable"]),
+        "flagged_by_field_only": field_only,
         "query_dsl": body,
     }
+    if field_only:
+        meta["remediation_note"] = (
+            f"{field_only} document(s) match only in an identity field, not in "
+            f"{text_field}. `redact_in_place` rewrites {text_field} only, so it would "
+            f"not remove them; use `hard_delete`, or redact the field by hand."
+        )
     return candidates, evaluations, meta

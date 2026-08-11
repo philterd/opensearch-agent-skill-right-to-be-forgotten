@@ -100,3 +100,38 @@ def test_real_captions_from_the_sample():
     }
     for caption, expected in cases.items():
         assert caselaw.party_surnames(caption) == expected
+
+
+# --- compound captions, from real CourtListener data ------------------------- #
+
+def test_a_person_with_an_institution_appended_keeps_the_person():
+    """One caption string can hold two parties, comma delimited."""
+    assert caselaw.party_surnames(
+        "United States v. James E. Gaines, United States of America") == ["Gaines"]
+
+
+def test_a_trailing_office_and_place_are_trimmed():
+    assert caselaw.party_surnames(
+        "Alexander M. Hunter, District Attorney, Twentieth Judicial District, "
+        "Boulder, Colorado v. District Court") == ["Hunter"]
+
+
+def test_an_office_title_is_not_a_surname():
+    assert caselaw.party_surnames(
+        "Samson TEKLEWOLD, Petitioner, v. Alberto R. GONZALES, Attorney General, "
+        "Respondent") == ["TEKLEWOLD", "GONZALES"]
+
+
+def test_a_leading_article_does_not_hide_an_institution():
+    """"the STATE of Texas" is headed by "the", not by "state"."""
+    assert caselaw.party_surnames(
+        "Juan RODRIGUEZ, Appellant, v. the STATE of Texas, Appellee") == ["RODRIGUEZ"]
+
+
+def test_an_institution_inside_the_first_segment_yields_nothing_usable():
+    assert caselaw.party_surnames("Ward v. British Government General") == ["Ward"]
+    assert caselaw.surname_of("British Government General") == ""
+
+
+def test_a_single_token_party_is_still_a_person():
+    assert caselaw.party_surnames("People v. Johnson") == ["Johnson"]

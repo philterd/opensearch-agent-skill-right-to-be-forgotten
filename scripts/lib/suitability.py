@@ -90,14 +90,20 @@ def classify(text, window=WINDOW):
 
 
 def naming_channel(mapping_properties, text_field):
-    """Fields that could label a description, excluding the searched text."""
+    """Fields that could label a description, excluding the searched text.
+
+    ``searchable`` is false for a field mapped `index: false`, which can still
+    be read from `_source` to build labels but cannot be queried.
+    """
     found = []
     for field, spec in sorted((mapping_properties or {}).items()):
         if field == text_field:
             continue
-        kind = (spec or {}).get("type", "object")
+        spec = spec or {}
+        kind = spec.get("type", "object")
         if kind in ("text", "keyword") and _IDENTITY_HINT.search(field):
-            found.append({"field": field, "type": kind})
+            found.append({"field": field, "type": kind,
+                          "searchable": spec.get("index", True) is not False})
     return found
 
 
@@ -196,3 +202,25 @@ def assess(client, index, text_field="message", sample=500):
         "naming_channel_candidates": channel,
         "verdict": verdict(density, prose_share, bool(channel), prose_docs),
     }
+
+
+_NOTES = {
+    "rich": "This corpus describes people; a thin result is about the subject.",
+    "sparse": ("Descriptions are uncommon here. The documents carrying one are the "
+               "ceiling on what this pass can return, however well it works."),
+    "absent": ("This corpus barely describes people. Report an empty or thin result as "
+               "a property of the corpus, not as evidence the subject is absent, and "
+               "rely on the direct pass."),
+}
+
+
+def applicability_note(band, candidate_count):
+    """How to read an indirect result on a corpus of this kind.
+
+    "Nothing found" and "this corpus does not describe people" produce the same
+    empty list and mean opposite things to a compliance reader.
+    """
+    note = _NOTES[band]
+    if candidate_count == 0 and band != "rich":
+        note += " No candidates were returned, so say this before reporting the result."
+    return note
