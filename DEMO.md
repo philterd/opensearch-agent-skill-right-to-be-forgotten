@@ -469,3 +469,22 @@ uv run python scripts/forget_me.py discover-direct \
 ```
 
 From there the steps are identical, against `logs-application-demo`.
+
+---
+
+## TL;DR: does it do what it claims?
+
+| Claim | Verdict | Evidence |
+| :--- | :--- | :--- |
+| Finds people by literal identifier | **yes** | searches text and the fields recording who a document is about; text alone found 3% of one subject's footprint |
+| Finds people described without a name | **where the corpus describes them** | court opinions carry 8.4 descriptive references per document, email 0.11; on email the pass returns nothing |
+| Hybrid search finds what keyword search misses | **not shown** | 53.1% against BM25's 50.9% at k=50 over 2,692 subjects, intervals overlapping; BM25 wins outright at k=1 |
+| Reasons over candidates and picks the right person | **yes, on synthetic data** | precision 1.00, recall 0.91, zero false positives across eight decoy categories varying one marker each; untested on real prose |
+| Removes what it flags | **yes** | 11 of 11 redaction spans verbatim, so none silently fail; over-redaction averages 7.2% of a document |
+| Never writes to your cluster, one command per document, refuses legal holds, chains the certificate | **yes** | true by construction and visible in the generated script |
+
+The erasure machinery works and the direct pass has no caveats. The indirect
+pass works where documents describe people, which court opinions do and email
+does not, so run `assess` on your own index before trusting it. The specific
+claim that hybrid retrieval beats keyword search is the one this evidence does
+not support.

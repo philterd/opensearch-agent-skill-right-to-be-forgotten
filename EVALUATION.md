@@ -157,25 +157,38 @@ the load-bearing result: these descriptions survive an aggressive mask.
 
 ### Retrieval, and a fusion defect
 
-**Measured** on 300 case-law subjects, hit-rate at k:
+**Measured** on 2,692 case-law subjects over a 5,470-document index, hit-rate at
+k. Hit-rate is not comparable across corpus sizes, so the index size belongs
+beside every figure:
 
 | | @1 | @5 | @10 | @25 | @50 | MRR |
 | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
-| hybrid, min-max normalization | 4.0% | 5.7% | 9.0% | 21.7% | 42.0% | 0.061 |
-| hybrid, reciprocal rank fusion | 7.3% | 35.3% | 41.7% | 46.0% | 49.7% | 0.190 |
-| BM25 only | 26.7% | 39.0% | 40.0% | 41.0% | 42.7% | 0.321 |
+| hybrid, reciprocal rank fusion | 7.7% | 38.9% | 44.8% | 50.0% | 53.1% | 0.207 |
+| BM25 only | 32.7% | 44.0% | 47.0% | 50.0% | 50.9% | 0.376 |
 
-Min-max normalization scales each clause within its own result set, so an
-uninformative neural clause has its noise stretched across the full range and
-averaged into the lexical score, pushing good lexical hits down. Reciprocal rank
-fusion uses ranks, so a weak clause contributes bounded noise. Under RRF hybrid
-beats BM25 from k=10 upward, the first support this project has produced for its
-own mechanism claim. On Enron the same change lifted hybrid from 22.4% to 31.6%,
-level with BM25 rather than behind it.
+Intervals separate only at k=1 and k=5, where BM25 wins. From k=10 on the two
+are statistically indistinguishable: 44.8% against 47.0% at k=10, and 53.1%
+against 50.9% at k=50, all overlapping.
 
-BM25 still wins at k=1, and the rank constant barely matters (10, 20 and 60
-differ by under half a point), so that is structural. Prefer lexical for
-precision at the top, hybrid for coverage.
+**Fusion.** Min-max normalization scales each clause within its own result set,
+so an uninformative neural clause has its noise stretched across the full range
+and averaged into the lexical score, pushing good lexical hits down. Reciprocal
+rank fusion uses ranks, so a weak clause contributes bounded noise. **Measured**
+on 300 subjects, normalization gave hybrid 5.7% at k=5 against RRF's 35.3%, and
+on Enron the same change lifted hybrid from 22.4% to 31.6% at top-k. RRF is the
+default because that defect is real and large.
+
+**The mechanism claim is still unsupported.** An earlier run on 300 subjects
+showed hybrid ahead by 7.0 points at k=50 and read as the first evidence that
+hybrid surfaces what BM25 misses. Nine times the subjects shrank that to 2.2
+points with overlapping intervals, and reversed the ordering at k=10. The
+apparent advantage was sampling noise. What RRF buys is parity, not an edge:
+prefer lexical for precision at the top, where BM25 leads by 25 points at k=1,
+and treat the two as equivalent at depth.
+
+This is also the clearest argument in this document for stating intervals and
+resisting a result until it separates. The 7-point gap was reported with the
+caveat that it was not settled; it was not, and it did not survive.
 
 ### Judgment, on the synthetic corpus only
 
