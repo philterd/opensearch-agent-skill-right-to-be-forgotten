@@ -171,7 +171,7 @@ def _open_stream(source):
 
 
 def iter_documents(source=None, limit=DEFAULT_LIMIT, custodians=None,
-                   folders=None, max_chars=DEFAULT_MAX_CHARS):
+                   folders=None, max_chars=DEFAULT_MAX_CHARS, skipped=None):
     """Yield (doc_id, source_dict) for up to ``limit`` messages.
 
     Custodian groups are not alphabetical, so a --custodian filter may stream
@@ -179,6 +179,7 @@ def iter_documents(source=None, limit=DEFAULT_LIMIT, custodians=None,
     """
     wanted_custodians = set(custodians or [])
     wanted_folders = set(folders or [])
+    skipped = [] if skipped is None else skipped
     tar, close = _open_stream(source)
     seen = 0
     try:
@@ -198,7 +199,13 @@ def iter_documents(source=None, limit=DEFAULT_LIMIT, custodians=None,
             fileobj = tar.extractfile(member)
             if fileobj is None:
                 continue
-            doc = parse_member(fileobj.read(), custodian, folder, max_chars)
+            # Half a million messages: one malformed header should cost that
+            # message, not the whole ingest. Skips are counted, never silent.
+            try:
+                doc = parse_member(fileobj.read(), custodian, folder, max_chars)
+            except Exception:  # noqa: BLE001 - unparseable member, keep going
+                skipped.append(member.name)
+                continue
             if doc is None:
                 continue
             seen += 1
@@ -243,7 +250,7 @@ def load(client, setup_neural=True, text_field="message",
             "mappings": {"properties": dict(extra_props, **{text_field: {"type": "text"}})}
         })
 
-    loaded, custodians_seen, batch = 0, set(), []
+    loaded, custodians_seen, batch, skipped = 0, set(), [], []
 
     def flush():
         nonlocal batch
@@ -261,7 +268,8 @@ def load(client, setup_neural=True, text_field="message",
 
     # Smaller chunks than seed_demo: ingest embeds each doc, so large bulk
     # requests risk a gateway timeout.
-    for doc_id, doc in iter_documents(source, limit, custodians, folders, max_chars):
+    for doc_id, doc in iter_documents(source, limit, custodians, folders, max_chars,
+                                      skipped=skipped):
         batch.append((doc_id, doc))
         custodians_seen.add(doc["custodian"])
         loaded += 1
@@ -275,6 +283,8 @@ def load(client, setup_neural=True, text_field="message",
     return {
         "index": ENRON_INDEX,
         "documents_loaded": loaded,
+        "documents_skipped": len(skipped),
+        "skipped_sample": skipped[:5],
         "custodians": sorted(custodians_seen),
         "custodian_count": len(custodians_seen),
         "neural_search": neural is not None,

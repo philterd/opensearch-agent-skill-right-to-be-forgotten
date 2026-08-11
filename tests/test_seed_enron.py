@@ -46,6 +46,42 @@ def test_addresses_survive_a_non_string_header_object():
     assert seed_enron._addresses(msg, "To") == ["a@enron.com", "b@enron.com"]
 
 
+def test_iter_documents_skips_an_unparseable_member_and_records_it(tmp_path, monkeypatch):
+    """One bad message must not abort a half-million-message ingest."""
+    calls = {"n": 0}
+
+    def exploding_parse(raw, custodian, folder, max_chars):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise UnicodeDecodeError("utf-8", b"", 0, 1, "boom")
+        return {"message": "fine", "custodian": custodian}
+
+    class _Member:
+        def __init__(self, name):
+            self.name = name
+
+        def isfile(self):
+            return True
+
+    members = [_Member("maildir/allen-p/sent/1"), _Member("maildir/allen-p/sent/2")]
+
+    class _Tar:
+        def __iter__(self):
+            return iter(members)
+
+        def extractfile(self, member):
+            import io
+            return io.BytesIO(b"raw")
+
+    monkeypatch.setattr(seed_enron, "parse_member", exploding_parse)
+    monkeypatch.setattr(seed_enron, "_open_stream", lambda src: (_Tar(), lambda: None))
+
+    skipped = []
+    docs = list(seed_enron.iter_documents(source="x", limit=10, skipped=skipped))
+    assert [d[0] for d in docs] == ["allen-p/sent/2"]
+    assert skipped == ["maildir/allen-p/sent/1"]
+
+
 def test_parse_member_indexes_the_x_headers():
     raw = (b"Message-ID: <123.JavaMail.evans@thyme>\r\n"
            b"Date: Wed, 7 Nov 2001 09:00:00 -0800 (PST)\r\n"
