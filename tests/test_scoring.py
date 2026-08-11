@@ -198,3 +198,70 @@ class _MgetClient:
 def test_fetch_texts_skips_documents_that_are_not_there():
     out = scoring.fetch_texts(_MgetClient(), "idx", ["a", "missing", "b"])
     assert out == {"a": "text of a", "b": "text of b"}
+
+
+# --- k must be able to reach every positive --------------------------------- #
+
+def test_extend_ks_adds_a_k_that_covers_the_positives():
+    assert scoring.extend_ks([10, 50], 451) == (10, 50, 451)
+
+
+def test_extend_ks_leaves_an_already_sufficient_k_alone():
+    assert scoring.extend_ks([10, 500], 451) == (10, 500)
+
+
+def test_extend_ks_deduplicates_and_sorts():
+    assert scoring.extend_ks([50, 10, 50], 5) == (10, 50)
+
+
+def test_extended_k_removes_the_cap_warning():
+    ks = scoring.extend_ks([10], 3)
+    out = scoring.recall_at_k(["a", "b", "c"], {"a", "b", "c"}, ks=ks)
+    assert all(not v["k_caps_recall"] for v in out.values())
+
+
+# --- the ablation must be stated, not just tabulated ------------------------- #
+
+def _run(mode, percent, key="recall@500"):
+    return {"mode": mode, "recall_descriptive": {key: {"percent": percent}}}
+
+
+def test_ablation_says_plainly_when_bm25_wins():
+    runs = [_run("hybrid", 13.0), _run("bm25_only", 20.5)]
+    out = scoring.compare_modes(runs, "recall@500")
+    assert out["gap_points"] == -7.5
+    assert "BM25-only beat hybrid" in out["verdict"]
+    assert "contradicted" in out["verdict"]
+
+
+def test_ablation_says_plainly_when_hybrid_wins():
+    out = scoring.compare_modes([_run("hybrid", 30.0), _run("bm25_only", 20.0)],
+                                "recall@500")
+    assert "Hybrid beat BM25-only" in out["verdict"]
+
+
+def test_ablation_calls_a_small_gap_noise_and_withholds_the_claim():
+    out = scoring.compare_modes([_run("hybrid", 20.4), _run("bm25_only", 20.0)],
+                                "recall@500")
+    assert "within noise" in out["verdict"]
+    assert "does not support the claim" in out["verdict"]
+
+
+def test_ablation_takes_the_best_wording_per_mode():
+    runs = [_run("hybrid", 5.0), _run("hybrid", 18.0), _run("bm25_only", 10.0)]
+    out = scoring.compare_modes(runs, "recall@500")
+    assert out["best_hybrid_percent"] == 18.0
+
+
+# --- interpretation ---------------------------------------------------------- #
+
+def test_assumptions_carry_the_precision_thresholds_and_what_is_measured():
+    out = scoring.assumptions(LABELS, (10,), [])
+    assert out["precision_thresholds"]["strict_precision"] == 0.88
+    assert out["precision_thresholds"]["high_recall"] == 0.60
+    assert "topical authorship retrieval" in out["measures"]
+
+
+def test_interpretation_refuses_the_stronger_reading():
+    assert "adjacent, not the same" in scoring.INTERPRETATION
+    assert "demo corpus" in scoring.INTERPRETATION

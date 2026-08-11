@@ -404,6 +404,29 @@ def cmd_audit_mask(args):
         sys.exit(1)
 
 
+def _positive_breakdown(client, labels, held):
+    """Descriptive vs list-only counts for the score half.
+
+    Classification needs the pre-mask text, so it reads the source index.
+    """
+    from lib import scoring, subjects
+    texts = scoring.fetch_texts(
+        client, labels["source_index"], [p["original_id"] for p in held])
+    by_original = {p["original_id"]: p["doc_id"] for p in held}
+    surname = subjects.surname_of(
+        {"attributes": {"display_name_variants": labels["aliases"]["name_variants"]}})
+    split = scoring.descriptive_split(
+        [{"doc_id": oid} for oid in texts], texts, surname)
+    descriptive_ids = {by_original[d["doc_id"]] for d in split["descriptive"]}
+    return descriptive_ids, {
+        "total": len(labels["positives"]),
+        "score_half": len(held),
+        "descriptive_in_score_half": len(descriptive_ids),
+        "list_only_in_score_half": len(held) - len(descriptive_ids),
+        "distinct_descriptive": split["distinct_descriptive"],
+    }
+
+
 def cmd_score_discovery(args):
     from lib.client import create_client
     from lib.discovery import discover
@@ -425,20 +448,14 @@ def cmd_score_discovery(args):
     if not profiles:
         _fail("The derive half yielded no usable terms to build a profile from.")
 
-    # Descriptive classification needs the pre-mask text, so it reads the source.
-    source_texts = scoring.fetch_texts(
-        client, labels["source_index"], [p["original_id"] for p in held])
-    by_original = {p["original_id"]: p["doc_id"] for p in held}
-    surname = subjects.surname_of(
-        {"attributes": {"display_name_variants": labels["aliases"]["name_variants"]}})
-    split = scoring.descriptive_split(
-        [{"doc_id": oid} for oid in source_texts], source_texts, surname)
-    descriptive_ids = {by_original[d["doc_id"]] for d in split["descriptive"]}
+    descriptive_ids, breakdown = _positive_breakdown(client, labels, held)
+    breakdown["derive_half"] = len(derive)
 
     held_ids = {p["doc_id"] for p in held}
     derive_ids = {p["doc_id"] for p in derive}
     model_id = find_deployed_model(client)
-    ks = tuple(int(k) for k in args.ks.split(","))
+    # Extend k so recall cannot be capped below 100% without saying so.
+    ks = scoring.extend_ks([int(k) for k in args.ks.split(",")], len(held_ids))
     size = max(ks)
 
     runs = []
@@ -454,31 +471,36 @@ def cmd_score_discovery(args):
                 "wording": i,
                 "recall_all_positives": scoring.recall_at_k(ranked, held_ids, ks),
                 "recall_descriptive": scoring.recall_at_k(ranked, descriptive_ids, ks),
-                "derive_half_retrieved": len(derive_ids & set(ranked)),
+                # Same shape as the score half, so the two are comparable.
+                "recall_derive_half": scoring.recall_at_k(ranked, derive_ids, ks),
             })
 
     top = f"recall@{max(ks)}"
     spread = {m: sorted(r["recall_descriptive"][top]["percent"]
                         for r in runs if r["mode"] == m)
               for m in ("hybrid", "bm25_only")}
+    halves = {
+        "score_half_percent": max(r["recall_descriptive"][top]["percent"] for r in runs),
+        "derive_half_percent": max(r["recall_derive_half"][top]["percent"] for r in runs),
+    }
+    halves["note"] = (
+        "A derive half retrieved far more often than the score half means the "
+        "profile memorised specifics rather than describing a role."
+    )
     _out({
         "ok": True,
         "stage": "discover",
-        "positives": {
-            "total": len(labels["positives"]),
-            "derive_half": len(derive),
-            "score_half": len(held),
-            "descriptive_in_score_half": len(descriptive_ids),
-            "list_only_in_score_half": len(held) - len(descriptive_ids),
-            "distinct_descriptive": split["distinct_descriptive"],
-        },
+        "positives": breakdown,
         "terms": terms[:15],
         "runs": runs,
         "spread_at_top_k": spread,
+        "halves_at_top_k": halves,
+        "ablation": scoring.compare_modes(runs, top),
         "headline": (
             "Read recall_descriptive: the list-only positives are documents whose "
             "only mention was a recipient list, which no profile can retrieve."
         ),
+        "measures": scoring.INTERPRETATION,
         "assumptions": scoring.assumptions(labels, ks, profiles),
     })
 
@@ -499,6 +521,7 @@ def cmd_score_judgment(args):
         _fail("No judgments left after excluding the derive half.")
 
     positive_ids = {p["doc_id"] for p in held}
+    _, breakdown = _positive_breakdown(client, labels, held)
     scanned = labels["stats"]["documents_scanned"]
     texts = scoring.fetch_texts(client, args.index, [e["doc_id"] for e in evaluations])
 
@@ -512,6 +535,7 @@ def cmd_score_judgment(args):
     _out({
         "ok": True,
         "stages": ["agent judgment + filter_flagged", "identifying_snippets"],
+        "positives": breakdown,
         "judgments_scored": len(evaluations),
         "flagged_set": by_threshold,
         "spans": scoring.span_validity(evaluations, texts),
@@ -521,6 +545,7 @@ def cmd_score_judgment(args):
             "confidence scores. Judgments on the derive half are excluded, since "
             "those documents helped write the query."
         ),
+        "measures": scoring.INTERPRETATION,
         "assumptions": scoring.assumptions(labels, (), []),
     })
 

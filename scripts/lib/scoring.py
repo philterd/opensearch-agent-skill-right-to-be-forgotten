@@ -30,6 +30,14 @@ def split_positives(positives, namespace="derive/v1"):
     return derive, score
 
 
+def extend_ks(ks, positive_count):
+    """Add a k that can reach every positive, so recall is never silently capped."""
+    ks = sorted(set(int(k) for k in ks))
+    if positive_count and (not ks or max(ks) < positive_count):
+        ks.append(int(positive_count))
+    return tuple(ks)
+
+
 def recall_at_k(ranked_ids, positive_ids, ks=DEFAULT_KS):
     positive_ids = set(positive_ids)
     total = len(positive_ids)
@@ -88,6 +96,44 @@ def build_profiles(terms, wordings=_WORDINGS, per_profile=5):
     slots = dict(zip("abcde", picked))
     return [{"profile": w.format(**slots), "keywords": " ".join(terms[:8])}
             for w in wordings]
+
+
+def compare_modes(runs, top_key, margin=1.0):
+    """Say in words which retrieval mode won.
+
+    The skill's mechanism claim is that hybrid surfaces what BM25 misses. A
+    table the reader has to interpret does not test that.
+    """
+    best = {}
+    for run in runs:
+        pct = run["recall_descriptive"][top_key]["percent"]
+        best[run["mode"]] = max(best.get(run["mode"], 0.0), pct)
+    hybrid, bm25 = best.get("hybrid", 0.0), best.get("bm25_only", 0.0)
+    gap = round(hybrid - bm25, 1)
+    if abs(gap) < margin:
+        verdict = (f"Hybrid and BM25-only are within noise at {top_key} "
+                   f"({hybrid}% against {bm25}%). This run does not support the claim "
+                   f"that hybrid retrieval surfaces documents BM25-only misses.")
+    elif gap > 0:
+        verdict = (f"Hybrid beat BM25-only at {top_key} by {gap} points "
+                   f"({hybrid}% against {bm25}%).")
+    else:
+        verdict = (f"BM25-only beat hybrid at {top_key} by {abs(gap)} points "
+                   f"({bm25}% against {hybrid}%). The skill's mechanism claim, that "
+                   f"hybrid surfaces documents BM25-only misses, is contradicted here.")
+    return {"best_hybrid_percent": hybrid, "best_bm25_only_percent": bm25,
+            "gap_points": gap, "verdict": verdict}
+
+
+INTERPRETATION = (
+    "This measures topical authorship retrieval: the profile is built from terms "
+    "distinctive to the subject's own documents, so a hit means the document reads "
+    "like the rest of their output. The skill's claim is different, that a document "
+    "describing a person identifies them. These are adjacent, not the same. Do not "
+    "read this figure as evidence for indirect identification from a description; "
+    "the demo corpus, whose documents are written to describe people, is where that "
+    "claim is testable."
+)
 
 
 def flagged_at(evaluations, threshold):
@@ -200,7 +246,7 @@ def without(evaluations, doc_ids):
     return [e for e in evaluations if e.get("doc_id") not in doc_ids]
 
 
-def assumptions(labels, ks, profiles):
+def assumptions(labels, ks, profiles, thresholds=None):
     """Every report states what it rests on, so a reader can attack an input."""
     aliases = labels.get("aliases", {})
     return {
@@ -212,7 +258,9 @@ def assumptions(labels, ks, profiles):
         "mask_replacement": labels.get("mask_replacement", ""),
         "phone_policy": labels.get("phone_policy"),
         "k_values": list(ks),
+        "precision_thresholds": dict(thresholds or PRECISION_THRESHOLDS),
         "profile_wordings": [p["profile"] for p in profiles],
+        "measures": INTERPRETATION,
         "caveats": [
             "Masking manufactures the indirect case: a sentence written without a "
             "name would have been phrased differently from one with the name removed.",
