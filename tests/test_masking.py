@@ -287,7 +287,7 @@ def _masked_doc(text):
 
 
 def test_audit_passes_on_a_clean_masked_corpus(pattern):
-    docs = [_masked_doc(f"{"[MASKED]"} sent the schedule.")]
+    docs = [_masked_doc("[MASKED] sent the schedule.")]
     report = leakage.audit(docs, pattern)
     assert report["passed"] is True and report["failures"] == []
     assert report["documents_scanned"] == 1
@@ -317,7 +317,7 @@ def test_audit_reports_residual_name_substrings_without_failing(pattern):
 
 def test_residual_reporting_is_quiet_on_a_genuinely_clean_corpus(pattern):
     aliases = masking.alias_set(ENTRIES, "phillip.allen@enron.com")
-    report = leakage.audit([_masked_doc(f"{"[MASKED]"} sent it.")], pattern,
+    report = leakage.audit([_masked_doc("[MASKED] sent it.")], pattern,
                            aliases=aliases)
     assert report["residual_name_substrings"]["documents"] == 0
 
