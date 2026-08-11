@@ -393,19 +393,34 @@ Measured against that test:
 | MIMIC-III | yes, and uniqueness is exactly computable | `subject_id` and structured tables | best fit; credentialed access, and its DUA forbids re-identification |
 | US case law (CourtListener) | 40% role language | case caption | usable, with caveats below |
 
-**Measured** on a 40Mb slice of the CourtListener bulk opinions export, 7,535
-opinions: 40% carry a party-role reference, every one joined to its caption,
-88% of those captions yield a person party, and 82% of bodies also name that
-party, so masking is still required. After masking, 76% remain descriptions of
-a person, with a median of 18,917 characters of surviving text. Against Enron's
-0.39% and seven distinct descriptive documents for a well-chosen subject, that
-is the corpus difference in one line.
+**Measured** on a 40Mb slice of the CourtListener bulk opinions export, using
+the caption parser and the same alias expansion and removal masking the harness
+uses:
 
-Three cautions on those numbers. The 76% used a crude surname-only mask, so it
-is optimistic; a full alias set removes more. A wider role pattern including
-officer, witness and treating physician gives 51.7% rather than 40%, so state
-which pattern a density figure used. And the sample is id-ordered, so it skews
-to particular courts and eras.
+| | |
+| :--- | :--- |
+| opinions carrying a party-role reference | 3,439 |
+| joined to a caption | 100% |
+| yielding a person party | 2,804 (82%); the rest are institution against institution |
+| alias variants per subject | 7.8 mean |
+| party also named in the body | 87%, so masking is required |
+| still a description of a person after masking | 76%, median 14,170 characters |
+| distinct party surnames | 2,380, of which 81% appear in exactly one opinion |
+
+The 76% holding steady while masking went from one surname to 7.8 variants is
+the load-bearing result: these descriptions survive an aggressive mask. Against
+Enron's 0.39% role language and seven distinct descriptive documents for a
+well-chosen subject, that is the corpus difference in one line.
+
+Two cautions remain. A wider role pattern including officer, witness and
+treating physician gives 51.7% rather than 40% density, so state which pattern a
+figure used. And the sample is id-ordered, so it skews to particular courts and
+eras.
+
+The commonest surnames are now Smith (33), Johnson (31) and Brown (25), where a
+naive `X v. Y` split gave "appellant" (321) and "defendant-appellant" (98). Real
+shared surnames are the expected shape, and the mask-broadly-label-narrowly rule
+in step 2a is what handles them.
 
 Case law also changes the shape of the measurement. 79% of parties appear in
 exactly one opinion, so per-subject recall is 0% or 100% and meaningless.
