@@ -3,9 +3,14 @@
 How to build ground truth for the hard half of an erasure request, and what the
 resulting numbers do and do not tell you.
 
-> **Status:** this document describes a method. The harness is not implemented.
-> The demo corpus in `scripts/seed_demo.py` carries hand-built labels, and
-> `mail-enron` has none.
+> **Status:** stages one and two are implemented for Enron: `roster` builds the
+> naming-channel roster and reports coverage, `mask-corpus` builds the masked
+> index and the label set, and `audit-mask` re-runs the leakage gate. Stage
+> three, scoring, is not built. The demo corpus in `scripts/seed_demo.py` still
+> carries hand-built labels.
+>
+> Everything below marked **Measured** is a figure from a real run against the
+> full 517,394-message corpus, not an estimate.
 
 ## Why this needs a document
 
@@ -61,7 +66,9 @@ flowchart TD
     A -- "yes" --> STOP["Fail the run.<br/>The metric would be fiction."]
     A -- "no" --> DISC
 
-    R --> Q["Profiles generated<br/>per subject"]
+    L1 --> SPL{"Split positives:<br/>derive half / score half"}
+    SPL -- "derive half" --> Q["Profile generated from<br/>what the subject produced"]
+    R -. "attributes only:<br/>window, correspondents" .-> Q
     Q --> DISC
 
     DISC["discover<br/>hybrid BM25 + neural"] --> EV["agent judgment<br/>+ filter_flagged"]
@@ -71,7 +78,7 @@ flowchart TD
     EV --> S2["precision, recall,<br/>FP per 1k documents"]
     SP --> S3["span validity,<br/>over-redaction ratio"]
 
-    L1 --> S1
+    SPL -- "score half" --> S1
     L1 --> S2
     L2 --> S2
     L1 --> S3
@@ -80,12 +87,16 @@ flowchart TD
 Read it as two paths out of one corpus that reconverge only at the bottom. The
 searchable text the pipeline sees is the masked describing channel and nothing
 else. The naming channel produces the labels, the mask, and the roster, and it
-reaches the pipeline at one point only: as the generated profile, which stands in
-for the description a real erasure request would supply. That is an input, not an
-answer. It says who to look for, never which documents are positive.
+reaches the pipeline as the generated profile, which stands in for the
+description a real erasure request would supply.
 
-Everything else the naming channel produces stays on the label side until
-scoring, which is what keeps the measurement honest.
+The profile is the one place the label side touches the query side, so it is
+where honesty has to be enforced explicitly. Roster attributes alone do not
+retrieve anything (step 4), so the profile is built from the content of the
+subject's own documents. That means splitting the positives: one half derives
+the profile, the other half is scored, and no document does both jobs. Recall is
+reported over the score half only. Without that split the query would be built
+from the documents it is measured against, and the number would be meaningless.
 
 The audit is a gate rather than a warning: if one alias survives masking, the
 document is trivially retrievable and every number below it is meaningless.
@@ -98,6 +109,14 @@ Find the fields that identify people and confirm they are outside the field
 discovery searches (`--text-field`, default `message`). If the two overlap, the
 evaluation is circular and nothing below is valid.
 
+Check what each candidate field actually holds rather than what its name
+suggests. **Measured:** reading Enron's `From`/`To`/`Cc`, which hold bare
+addresses, gave display names for 1.7% of addresses and the roster reported a
+corpus that could not support the later stages. The readable names and Exchange
+logins are in `X-From`/`X-To`/`X-cc`, and reading those instead gave 90% on the
+same data. A naming channel that yields almost no names is more likely to be the
+wrong field than a corpus without names.
+
 ### 2. Derive labels
 
 Two schemes, usable together.
@@ -109,6 +128,27 @@ corpus: the string was there before you removed it.
 
 This measures whether residual context alone re-links a document to the person,
 which is the capability the skill claims.
+
+*Mask broadly, label narrowly.* One variant list cannot do both jobs. Masking
+must remove anything that might refer to the subject, because a survivor makes
+the document trivially retrievable, and over-masking only costs context.
+Labelling must use only variants no one else in the population produces,
+because a shared name is not evidence about any particular person. Decide which
+is which from the roster rather than by category: a variant is discriminative
+when no other roster entry generates it. **Measured:** seven people in this
+corpus are called Harry, and labelling one of them on the full variant list made
+92% of their positives documents about somebody else.
+
+*A mention is not a description.* Scheme 2a labels every document containing the
+string, and in email most of those are recipient lists and forwarded header
+blocks. Masking a name out of a forty-person distribution list yields a document
+about nobody, which no profile can retrieve and no judgment can flag. Classify
+each mention as running prose or list context, and count only the prose ones
+when deciding whether a subject can be scored at all. **Measured:** on a 34,656
+message sample, one subject's 67 positives held 48 pure list mentions and 19
+descriptive ones, which collapsed to 7 distinct documents after near-duplicates.
+Retrieval against that label set returned 1 of 67 at k=200, which is the correct
+answer to a question not worth asking.
 
 **2b. Anonymity set size (roster).** Given a population of people active in the
 document's time window, and the markers a document asserts, count how many
@@ -127,6 +167,20 @@ calibrates the `precision_mode` thresholds, which are otherwise chosen by feel.
 Unlike 2a, this scheme is model-dependent, not factual. See
 [Limitations](#limitations).
 
+**Choosing a subject.** Volume is the obvious criterion and the wrong one. It
+counts appearances in headers, which are exactly the list mentions that cannot
+be scored. Rank candidates by distinct descriptive mentions instead, collapsing
+near-duplicates, since a corpus that repeats one announcement forty times offers
+one document's worth of evidence.
+
+Screen out subjects whose surname is an ordinary word before masking anything.
+Compare how often the surname appears against how often the full name does: a
+large ratio means the string belongs to the language rather than the person.
+**Measured:** `love` outnumbers `Phillip Love` 94 to 1, `dean` 40 to 1, and
+`cash` 7 to 1, while genuinely rare surnames sit near 1. Masking on a
+high-ratio surname deletes an English word from the entire corpus and labels
+thousands of unrelated documents as being about one person.
+
 ### 3. Audit the holdout, and fail loudly
 
 If masking is incomplete the metric is fiction, because a single surviving
@@ -141,19 +195,58 @@ fails the run, not a warning. Check for:
   `f"{custodian}/{folder}/{num}"`, so the custodian surname is in every id;
 - **signature blocks**, where a direct phone number or extension identifies as
   well as a name does;
-- **container names**: a folder, mailbox, or index named after the subject.
+- **container names**: a folder, mailbox, or index named after the subject;
+- **the mask token itself**, which marks every positive and nothing else.
+  **Measured:** `[MASKED]` appeared in 743 of 517,394 documents, essentially the
+  711 that were masked, so searching for it returns the answer key. It was also
+  the single strongest distinctive term in the positive set. Replace with
+  something corpus-neutral, or seed the same token into a sample of negatives so
+  its presence is not diagnostic.
 
 The last two are a judgment call. An unmasked phone number is arguably a true
 positive for identification rather than leakage. Decide which effect you are
 measuring and record the decision.
 
+The audit can only look for the variants it is given, so it must also fail on an
+alias set too thin to audit against. A subject with no name variant passes every
+check above while the corpus still prints their name on every page, which is
+worse than no gate because it certifies the corpus as scorable. **Measured:** a
+subject with six address-derived variants and no display name passed a clean
+audit while 89 documents still contained their full name verbatim.
+
+For the same reason the audit should not rely solely on the masking pattern: a
+boundary rule that skips a name on the way in skips it on the way back out. A
+second, looser check that ignores word boundaries catches that class. It
+over-reports by construction, so report it rather than fail on it. **Measured:**
+an `@` in the pattern's right-hand boundary left surnames intact wherever
+forwarded mail wrapped an address across table cells as
+`<Lynn.Blair@e| | |nron.com>`.
+
 ### 4. Construct queries mechanically
 
 The profile is an input to the pipeline, and writing one by hand per subject
-measures the prose as much as the system. Generate profiles from structured
-attributes, or generate several wordings per subject and report the spread
-across them. A large spread is itself a finding: it says the tool's output
-depends heavily on how the request is phrased, which users need to know.
+measures the prose as much as the system. Generate several wordings per subject
+and report the spread across them. A large spread is itself a finding: it says
+the tool's output depends heavily on how the request is phrased, which users
+need to know. **Measured:** three wordings of the same subject varied threefold
+in recall@50, from 1.9% to 5.6%.
+
+*Describe the activity, not the org chart.* Structured roster attributes are the
+obvious source and they do not work. Who someone emailed and when does not
+retrieve documents they wrote. **Measured:** a profile built from a subject's
+active window and top correspondents returned 0 of 451 positives at k=500, while
+a profile describing what they produced returned 12% to 15%. Worse, the roster
+pointed the wrong way entirely: header co-occurrence is dominated by
+distribution lists, so the top correspondents placed this subject on a trading
+desk when their own documents were all pulp and paper.
+
+*Derive the profile from held-out documents of the subject's own.* Split the
+positives, extract distinctive terms from one half, score recall on the other.
+This mirrors a real erasure request, where the data subject describes what they
+did rather than who they sat near, and it stays honest because the scored
+documents never contribute to the query. Check that the two halves are retrieved
+at similar rates: if the derive half comes back far more often, the profile has
+memorised specifics rather than described a role.
 
 ### 5. Run the pipeline
 
@@ -183,6 +276,19 @@ validity matters because a snippet that is not a verbatim substring causes the
 Painless script to silently no-op, so a document can be correctly flagged and
 still not redacted.
 
+Run a BM25-only ablation beside the hybrid query every time. **Measured:** on
+identical keywords, BM25 alone reached 20.5% recall@500 against hybrid's 13.0%,
+and the two were within noise below k=100. Hybrid's score fusion displaced BM25
+hits deeper in the ranking rather than adding to them.
+
+Check what the neural half of the hybrid query actually sees before reading
+anything into a recall figure. The local model truncates at a few hundred
+word-pieces, well short of the 4000 characters `seed_enron` keeps, so k-NN
+matches document openings while BM25 matches the whole text. On a corpus whose
+identifying mentions sit in quoted blocks near the end, "hybrid" recall is
+closer to BM25 recall than the name suggests, and an ablation against BM25-only
+is the way to find out rather than assume.
+
 Score each `precision_mode` (0.88 / 0.75 / 0.60) rather than only the default,
 and break results out by category where the corpus supports it. On the demo
 corpus the decoys vary one marker each (wrong team, wrong seniority, wrong
@@ -207,18 +313,28 @@ held out by construction.
 **Describing channel:** `message`.
 
 **Roster.** Sweeping every address across the archive reconstructs the
-population: `@enron.com` addresses give internal staff, display names give the
-alias variants that step 3 needs, and first-and-last-seen timestamps per address
-give an approximate active window. A correspondence graph clusters into
+population: `@enron.com` addresses give internal staff, and first-and-last-seen
+timestamps per address give an approximate active window. The alias variants
+step 3 needs come from `X-From`/`X-To`/`X-cc`, not from `From`/`To`/`Cc`, which
+hold bare addresses; the `X-` headers also carry the Exchange login as the
+trailing `CN=` fragment, so logins are observed rather than guessed. They pair
+positionally with the address lists, and the names must be dropped when the two
+disagree on length rather than mispaired. A correspondence graph clusters into
 something resembling teams. Headers carry no job titles, so attribute coverage
 is partial; check what the distribution ships alongside the maildir, and public
 sources such as the FERC record cover senior figures.
 
-**Mention recovery.** Pick a subject who is discussed often, take every document
-whose `message` contains one of their identifiers as the positive set, mask
-those identifiers across the full text including quoted regions, and run the
-pipeline against the masked copy. Recall is measured over the positives, false
-positives over documents about other people.
+**Measured** on the full 517,394-message corpus: 87,479 distinct addresses, 58%
+with a display name, 11% with an Exchange login. Login coverage falls as the
+corpus widens, because external correspondents have no Exchange DN.
+
+**Mention recovery.** Pick a subject by descriptive-mention density rather than
+volume, take every document whose `message` contains one of their discriminative
+identifiers as the positive set, mask the full variant list across the whole
+text including quoted regions, and run the pipeline against the masked copy.
+Recall is measured over the positives, false positives over documents about
+other people. Both the masking and the labelling depend on choices made in step
+2; state them with the result.
 
 **Natural cases.** Role-reference language appears in roughly 1% of Enron
 messages and usually describes a generic role or names the person elsewhere in
@@ -284,7 +400,12 @@ What the metrics support:
 
 - **Ablations.** "Hybrid retrieval surfaces documents BM25-only misses" is a
   claim about mechanism, and mechanism claims survive a corpus change better
-  than performance numbers do.
+  than performance numbers do. This one did not survive its first test:
+  **measured** on Enron, BM25 alone beat hybrid at k=500 (20.5% against 13.0%).
+  One corpus does not settle it, and the plausible cause is specific to this
+  data (the embedding model truncates long messages, and identifying context
+  here sits late in quoted blocks). But the claim should not be repeated as
+  established until a corpus is found where it holds.
 - **Failure discovery.** A documented failure class, for example markers that
   all match except the time window, is actionable on any data. Negative results
   travel further than positive ones.
@@ -304,6 +425,14 @@ own corpus, plus documented failure modes, not a headline score.
   would have been phrased differently from one with the name removed, so the
   masked set is a proxy. The natural cases in step 2a's complement are the check
   on this.
+- **Most mentions are not descriptions.** In email the majority of documents
+  containing a name contain it in a recipient list. Masking those produces
+  documents about nobody, so scheme 2a's raw positive set overstates by a large
+  factor how much of a corpus can be scored at all. Filter to prose mentions and
+  report both counts.
+- **Two people with one name are indistinguishable.** The roster merges entries
+  sharing a display name, since nothing in the headers separates them, and the
+  labels then cover both. No available signal catches this.
 - **Anonymity-set labels are model-dependent, not facts.** The roster is a model
   of the population; extracting markers from prose is an interpretation;
   deciding whether a title satisfies a description is a judgment; and treating
