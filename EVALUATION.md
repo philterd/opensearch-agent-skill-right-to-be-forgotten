@@ -199,9 +199,17 @@ fails the run, not a warning. Check for:
 - **the mask token itself**, which marks every positive and nothing else.
   **Measured:** `[MASKED]` appeared in 743 of 517,394 documents, essentially the
   711 that were masked, so searching for it returns the answer key. It was also
-  the single strongest distinctive term in the positive set. Replace with
-  something corpus-neutral, or seed the same token into a sample of negatives so
-  its presence is not diagnostic.
+  the single strongest distinctive term in the positive set.
+
+Masking therefore leaves nothing behind: the variant is removed and the
+surrounding whitespace closed up, rather than replaced with a marker. Diluting a
+marker into negatives is the obvious alternative and does not work at these
+proportions. With 711 positives in 517,394 documents, marking ten thousand
+negatives still leaves the marker 48 times more predictive than the base rate,
+and only marking essentially every document makes it uninformative. Removal also
+matches what is being simulated, a document written without the name. The audit
+enforces this by failing whenever a configured marker appears in fewer documents
+than a multiple of the positive count.
 
 The last two are a judgment call. An unmasked phone number is arguably a true
 positive for identification rather than leakage. Decide which effect you are

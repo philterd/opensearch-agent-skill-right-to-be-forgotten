@@ -16,7 +16,17 @@ import re
 
 MASKED_INDEX = "mail-enron-masked"
 LABELS_PATH = os.path.join("gdpr-eval", "enron-labels.json")
-MASK_TOKEN = "[MASKED]"
+
+# Empty, so masking leaves no marker. A visible token appears in exactly the
+# documents that contained a variant, which is the definition of a positive, so
+# it hands out the answer key: `[MASKED]` was found in 743 of 517,394 documents
+# against 711 masked. Diluting it into negatives cannot fix that without
+# marking essentially the whole corpus. Removal also better simulates the thing
+# being measured, a document written without the name.
+#
+# Unrelated to the erasure workflow's `[GDPR_REDACTED]`, where a visible marker
+# is wanted.
+MASK_REPLACEMENT = ""
 
 # Namespace for masked document ids. Bump it to invalidate an existing masked
 # index; every id changes with it.
@@ -225,7 +235,7 @@ def build_pattern(variants):
     return re.compile(rf"(?<!\w)(?:{alternation})(?!\w)", re.IGNORECASE)
 
 
-def mask_text(text, pattern, token=MASK_TOKEN):
+def mask_text(text, pattern, replacement=MASK_REPLACEMENT):
     """Return (masked_text, hit_count).
 
     seed_enron flattens subject, body, and quoted reply chains into one
@@ -238,9 +248,13 @@ def mask_text(text, pattern, token=MASK_TOKEN):
     def _sub(match):
         nonlocal hits
         hits += 1
-        return token
+        return replacement
 
-    return pattern.sub(_sub, text), hits
+    masked = pattern.sub(_sub, text)
+    if hits and not replacement:
+        # Removal leaves gaps; a run of spaces would be its own weak marker.
+        masked = re.sub(r"\s{2,}", " ", masked).strip()
+    return masked, hits
 
 
 def find_variants(text, pattern):

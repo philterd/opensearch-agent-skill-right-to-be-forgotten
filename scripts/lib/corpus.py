@@ -14,7 +14,7 @@ import json
 import os
 
 from lib.leakage import alias_set_failures, audit
-from lib.masking import (LABELS_PATH, MASKED_INDEX, MASK_TOKEN, build_pattern,
+from lib.masking import (LABELS_PATH, MASKED_INDEX, MASK_REPLACEMENT, build_pattern,
                          find_variants, mask_text, masked_doc_id)
 
 SOURCE_INDEX = "mail-enron"
@@ -77,8 +77,8 @@ def _create_masked_index(client, index, text_field, timestamp_field, setup_neura
 def build_masked_corpus(client, aliases, source_index=SOURCE_INDEX,
                         masked_index=MASKED_INDEX, text_field="message",
                         timestamp_field="@timestamp", setup_neural=True,
-                        embedding_field="message_embedding", mask_token=MASK_TOKEN,
-                        progress=None):
+                        embedding_field="message_embedding",
+                        mask_replacement=MASK_REPLACEMENT, progress=None):
     """Mask the corpus for one subject.
 
     Returns (positives, stats). ``positives`` are the masked ids of documents
@@ -120,7 +120,7 @@ def build_masked_corpus(client, aliases, source_index=SOURCE_INDEX,
             client, source_index, text_field, timestamp_field):
         scanned += 1
         label_hits = len(find_variants(text, label_pattern))
-        masked, hits = mask_text(text, pattern, mask_token)
+        masked, hits = mask_text(text, pattern, mask_replacement)
         new_id = masked_doc_id(original_id)
         if hits:
             masked_docs += 1
@@ -142,6 +142,7 @@ def build_masked_corpus(client, aliases, source_index=SOURCE_INDEX,
         "documents_scanned": scanned,
         "documents_masked": masked_docs,
         "variant_occurrences_removed": total_hits,
+        "mask_replacement": mask_replacement,
         "mask_variants": len(aliases["variants"]),
         "label_variants": len(aliases["label_variants"]),
         "ambiguous_variants": len(aliases.get("ambiguous_variants") or []),
@@ -179,10 +180,12 @@ def iter_masked_documents(client, index=MASKED_INDEX, page_size=1000, scroll="2m
 
 
 def audit_masked_index(client, aliases, index=MASKED_INDEX,
-                       phone_policy="identification", text_field="message"):
+                       phone_policy="identification", text_field="message",
+                       marker=None, positive_count=None):
     pattern = build_pattern(aliases["variants"])
     return audit(iter_masked_documents(client, index), pattern,
-                 phone_policy=phone_policy, text_field=text_field, aliases=aliases)
+                 phone_policy=phone_policy, text_field=text_field, aliases=aliases,
+                 marker=marker, positive_count=positive_count)
 
 
 def verify_positives(client, aliases, positives, source_index=SOURCE_INDEX,
@@ -219,6 +222,7 @@ def write_labels(path, aliases, positives, stats, audit_report, phone_policy):
         "masked_index": stats["masked_index"],
         "source_index": stats["source_index"],
         "text_field": stats["fields_carried"][0],
+        "mask_replacement": stats.get("mask_replacement", ""),
         "phone_policy": phone_policy,
         "aliases": aliases,
         "audit": audit_report,

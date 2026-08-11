@@ -31,6 +31,11 @@ FORBIDDEN_FIELDS = ("from", "to", "cc", "custodian", "folder", "message_id", "su
 _PHONE_RE = re.compile(r"\+?\d[\d\s().\-]{7,}\d")
 _EXTENSION_RE = re.compile(r"\b(?:x|ext\.?|extension)\s*\d{3,6}\b", re.IGNORECASE)
 
+# A marker must be at least this much more common than the positives before its
+# presence stops being a usable oracle. At 20x, seeing it makes a document 5%
+# likely to be a positive rather than certain.
+MARKER_DILUTION = 20
+
 PHONE_POLICIES = {
     "identification": (
         "Counted as true identification, not leakage. An unmasked direct line "
@@ -81,6 +86,26 @@ def alias_set_failures(aliases):
     return failures
 
 
+def marker_failures(marker, marker_documents, positive_count):
+    """Fail when the replacement marker is itself the label set.
+
+    A visible marker lands in exactly the documents that contained a variant,
+    so one query returns the answer key. Diluting it into negatives only helps
+    if nearly every document gets one, so the practical fix is to leave no
+    marker at all.
+    """
+    if not marker or not positive_count:
+        return []
+    if marker_documents < positive_count * MARKER_DILUTION:
+        return [
+            f"Mask marker {marker!r} appears in {marker_documents} document(s) "
+            f"against {positive_count} positive(s), so searching for it returns "
+            f"the label set. Mask with an empty replacement, or dilute the marker "
+            f"to at least {MARKER_DILUTION}x the positive count."
+        ]
+    return []
+
+
 def _substring_pattern(aliases):
     """A looser pattern than the masker uses, for reporting only.
 
@@ -96,7 +121,7 @@ def _substring_pattern(aliases):
 
 
 def audit(documents, pattern, phone_policy="identification", text_field="message",
-          aliases=None):
+          aliases=None, marker=None, positive_count=None):
     """Audit masked documents. ``documents`` yields (doc_id, source).
 
     Returns a report whose ``passed`` decides whether a score may be produced.
@@ -108,6 +133,7 @@ def audit(documents, pattern, phone_policy="identification", text_field="message
 
     loose = _substring_pattern(aliases)
     loose_docs = 0
+    marker_docs = 0
 
     scanned = 0
     surviving_docs = 0
@@ -131,6 +157,8 @@ def audit(documents, pattern, phone_policy="identification", text_field="message
 
         if loose is not None and loose.search(text):
             loose_docs += 1
+        if marker and marker in text:
+            marker_docs += 1
 
         hits = count_phone_signals(text)
         if hits:
@@ -139,6 +167,7 @@ def audit(documents, pattern, phone_policy="identification", text_field="message
 
     phones_are_leakage = phone_policy == "leakage"
     failures = alias_set_failures(aliases)
+    failures += marker_failures(marker, marker_docs, positive_count)
     if surviving_variants:
         failures.append(
             f"{len(surviving_variants)} alias variant(s) survived masking in "
@@ -181,6 +210,13 @@ def audit(documents, pattern, phone_policy="identification", text_field="message
                 "zero here with zero surviving variants means the masking pattern's "
                 "boundary rule is skipping something it should remove."
             ),
+        },
+        "mask_marker": {
+            "marker": marker or "",
+            "documents": marker_docs,
+            "note": ("Empty marker: masking removes the variant and leaves nothing "
+                     "to search for." if not marker else
+                     "A marker confined to the positives is an oracle for them."),
         },
         "readable_document_ids": readable_ids,
         "forbidden_fields_present": sorted(forbidden_seen),

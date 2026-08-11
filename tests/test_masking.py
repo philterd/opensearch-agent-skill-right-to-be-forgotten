@@ -223,7 +223,7 @@ def test_masking_reaches_inside_quoted_reply_blocks(pattern):
 def test_masking_consumes_a_whole_address_not_just_its_local_part(pattern):
     masked, _ = masking.mask_text("write to phillip.allen@enron.com now", pattern)
     assert "@enron.com" not in masked
-    assert masked == f"write to {masking.MASK_TOKEN} now"
+    assert masked == "write to now"
 
 
 def test_masking_leaves_unrelated_text_alone(pattern):
@@ -250,7 +250,21 @@ def test_masking_reaches_a_name_wrapped_across_ascii_table_cells(pattern):
 
 def test_masking_still_consumes_a_whole_intact_address(pattern):
     masked, hits = masking.mask_text("phillip.allen@enron.com", pattern)
-    assert masked == masking.MASK_TOKEN and hits == 1
+    assert masked == "" and hits == 1
+
+
+def test_masking_leaves_no_marker_to_search_for(pattern):
+    """A visible marker would appear in exactly the positives. See #6."""
+    assert masking.MASK_REPLACEMENT == ""
+    masked, hits = masking.mask_text("Phillip Allen  signed  it.", pattern)
+    assert hits == 1
+    # No marker, and no run of spaces standing in for one.
+    assert masked == "signed it."
+
+
+def test_masking_can_still_use_a_marker_when_asked(pattern):
+    masked, _ = masking.mask_text("ask Allen", pattern, replacement="[X]")
+    assert masked == "ask [X]"
 
 
 def test_build_pattern_returns_none_for_an_empty_alias_set():
@@ -273,7 +287,7 @@ def _masked_doc(text):
 
 
 def test_audit_passes_on_a_clean_masked_corpus(pattern):
-    docs = [_masked_doc(f"{masking.MASK_TOKEN} sent the schedule.")]
+    docs = [_masked_doc(f"{"[MASKED]"} sent the schedule.")]
     report = leakage.audit(docs, pattern)
     assert report["passed"] is True and report["failures"] == []
     assert report["documents_scanned"] == 1
@@ -303,13 +317,13 @@ def test_audit_reports_residual_name_substrings_without_failing(pattern):
 
 def test_residual_reporting_is_quiet_on_a_genuinely_clean_corpus(pattern):
     aliases = masking.alias_set(ENTRIES, "phillip.allen@enron.com")
-    report = leakage.audit([_masked_doc(f"{masking.MASK_TOKEN} sent it.")], pattern,
+    report = leakage.audit([_masked_doc(f"{"[MASKED]"} sent it.")], pattern,
                            aliases=aliases)
     assert report["residual_name_substrings"]["documents"] == 0
 
 
 def test_audit_fails_on_a_readable_document_id(pattern):
-    docs = [("allen-p/sent/17", {"message": masking.MASK_TOKEN})]
+    docs = [("allen-p/sent/17", {"message": "[MASKED]"})]
     report = leakage.audit(docs, pattern)
     assert report["passed"] is False
     assert report["readable_document_ids"] == 1
@@ -317,7 +331,7 @@ def test_audit_fails_on_a_readable_document_id(pattern):
 
 def test_audit_fails_when_header_or_container_fields_are_carried(pattern):
     doc_id = masking.masked_doc_id("allen-p/sent/1")
-    docs = [(doc_id, {"message": masking.MASK_TOKEN, "custodian": "allen-p", "from": "x"})]
+    docs = [(doc_id, {"message": "[MASKED]", "custodian": "allen-p", "from": "x"})]
     report = leakage.audit(docs, pattern)
     assert report["passed"] is False
     assert report["forbidden_fields_present"] == ["custodian", "from"]
@@ -346,6 +360,44 @@ def test_phone_detection_ignores_short_digit_runs(pattern):
 def test_audit_rejects_an_unknown_phone_policy(pattern):
     with pytest.raises(ValueError):
         leakage.audit([], pattern, phone_policy="ignore")
+
+
+# --- the mask marker must not be the label set (#6) ------------------------- #
+
+def test_audit_fails_when_the_marker_sits_only_in_the_positives(pattern):
+    docs = [(masking.masked_doc_id(f"d/{i}"), {"message": "[MASKED] sent it."})
+            for i in range(5)]
+    report = leakage.audit(docs, pattern, marker="[MASKED]", positive_count=5)
+    assert report["passed"] is False
+    assert "returns the label set" in report["failures"][0]
+    assert report["mask_marker"]["documents"] == 5
+
+
+def test_audit_accepts_a_marker_diluted_well_beyond_the_positives(pattern):
+    docs = [(masking.masked_doc_id(f"d/{i}"), {"message": "[MASKED] sent it."})
+            for i in range(200)]
+    report = leakage.audit(docs, pattern, marker="[MASKED]", positive_count=5)
+    assert report["passed"] is True
+
+
+def test_audit_has_nothing_to_check_when_nothing_is_left_behind(pattern):
+    docs = [(masking.masked_doc_id("d/1"), {"message": "sent it."})]
+    report = leakage.audit(docs, pattern, marker="", positive_count=1)
+    assert report["passed"] is True
+    assert report["mask_marker"]["documents"] == 0
+    assert leakage.marker_failures("", 0, 1) == []
+
+
+def test_marker_check_is_skipped_without_a_positive_count(pattern):
+    """audit-mask on an older label file that predates the field."""
+    assert leakage.marker_failures("[MASKED]", 5, None) == []
+
+
+def test_the_erasure_workflow_marker_is_untouched():
+    """#6 is about evaluation corpora; redaction still marks what it removed."""
+    from lib.actions import REDACTION_TOKEN
+    assert REDACTION_TOKEN == "[GDPR_REDACTED]"
+    assert masking.MASK_REPLACEMENT != REDACTION_TOKEN
 
 
 # --- the scoring guard ----------------------------------------------------- #

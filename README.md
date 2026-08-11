@@ -123,6 +123,13 @@ variant survives, the document is still trivially retrievable and every number
 computed from it would be fiction, so the run exits non-zero and the label set
 is marked unscorable. `audit-mask` re-runs that check on its own.
 
+Masking removes each variant rather than replacing it with a marker. A visible
+marker would appear in exactly the documents that contained a variant, which is
+the definition of a positive, so the corpus would carry its own answer key. The
+gate fails any run whose marker is confined to the positives. This is separate
+from the erasure workflow, where `[GDPR_REDACTED]` marks what was removed on
+purpose.
+
 The gate also fails closed on an alias set with no name in it. An audit can only
 look for the variants it was given, so a subject whose roster entry carries no
 display name would otherwise pass while the corpus still prints their name on

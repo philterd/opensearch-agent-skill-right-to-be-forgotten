@@ -325,10 +325,12 @@ def cmd_mask_corpus(args):
         text_field=args.text_field,
         embedding_field=args.embedding_field,
         setup_neural=not args.no_neural,
+        mask_replacement=args.mask_replacement,
     )
     audit_report = corpus.audit_masked_index(
         client, aliases, index=args.masked_index,
-        phone_policy=args.phone_policy, text_field=args.text_field)
+        phone_policy=args.phone_policy, text_field=args.text_field,
+        marker=args.mask_replacement, positive_count=len(positives))
     verification = corpus.verify_positives(
         client, aliases, positives, source_index=args.source_index,
         text_field=args.text_field)
@@ -366,7 +368,9 @@ def cmd_audit_mask(args):
     report = corpus.audit_masked_index(
         client, labels["aliases"], index=args.masked_index or labels["masked_index"],
         phone_policy=args.phone_policy or labels.get("phone_policy", "identification"),
-        text_field=labels.get("text_field", "message"))
+        text_field=labels.get("text_field", "message"),
+        marker=labels.get("mask_replacement", ""),
+        positive_count=labels.get("positive_count"))
     _out({"ok": report["passed"], "masked_index": labels["masked_index"], "audit": report})
     if not report["passed"]:
         sys.exit(1)
@@ -515,6 +519,9 @@ def build_parser():
                          "(default) or as leakage that fails the run")
     sp.add_argument("--min-variant-length", type=int, default=3,
                     help="Shortest alias variant to mask (default 3)")
+    sp.add_argument("--mask-replacement", default="",
+                    help="Text left where a variant was. Empty by default: a visible "
+                         "marker appears only in positives and so leaks the label set")
     sp.add_argument("--no-neural", action="store_true",
                     help="Build the masked index without deploying the embedding model")
     add_field_opts(sp)
