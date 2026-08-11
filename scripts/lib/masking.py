@@ -139,6 +139,9 @@ def alias_set(entries, address, min_length=MIN_VARIANT_LENGTH):
             continue
         for variant in entry["attributes"]["display_name_variants"]:
             names.update(_name_forms(variant))
+        # Observed Exchange aliases first; the generated forms are a fallback
+        # for addresses whose X- header never carried a distinguished name.
+        logins.update(entry["attributes"].get("exchange_logins") or [])
         logins.update(_login_forms(addr))
 
     def keep(values):
@@ -168,13 +171,19 @@ def build_pattern(variants):
     lookarounds, so an ungrouped pattern anchors only its first and last branch
     and every variant between them matches mid-word, masking `Callender` for
     `Allen`. Lookarounds rather than \\b so variants ending in `.` still anchor.
+
+    The boundary is `\\w` alone, deliberately not excluding `@`. Forwarded mail
+    in this corpus wraps addresses across ASCII-art table cells, as
+    `<Lynn.Blair@e| | |nron.com>`; treating `Blair@` as address interior and
+    skipping it left the surname sitting in the masked corpus. Matching a name
+    that happens to sit against an `@` is the safe direction to err.
     """
     usable = [v for v in variants if v]
     if not usable:
         return None
     ordered = sorted(set(usable), key=lambda v: (-len(v), v))
     alternation = "|".join(re.escape(v) for v in ordered)
-    return re.compile(rf"(?<![\w@])(?:{alternation})(?![\w@])", re.IGNORECASE)
+    return re.compile(rf"(?<!\w)(?:{alternation})(?!\w)", re.IGNORECASE)
 
 
 def mask_text(text, pattern, token=MASK_TOKEN):

@@ -27,7 +27,16 @@ INTERNAL_DOMAIN = "enron.com"
 
 ROSTER_PATH = os.path.join("gdpr-eval", "enron-roster.json")
 
-DEFAULT_SCAN_FIELDS = ("from", "to", "cc", "custodian", "@timestamp")
+DEFAULT_SCAN_FIELDS = ("from", "to", "cc", "x_from", "x_to", "x_cc",
+                       "custodian", "@timestamp")
+
+# Header pairs: the address list, and the X- header holding the readable names
+# for the same recipients in the same order.
+_ADDRESS_HEADERS = (("from", "x_from"), ("to", "x_to"), ("cc", "x_cc"))
+
+# `Fagan, Fran </O=ENRON/OU=NA/CN=RECIPIENTS/CN=FFAGAN>` repeated per recipient.
+_X_ENTRY_RE = re.compile(r"([^<>]+?)\s*<([^>]*)>")
+_EXCHANGE_CN_RE = re.compile(r"CN=([A-Za-z0-9._-]+)\s*$")
 
 # A subject needs enough surviving context to be findable after masking, a name
 # variant to mask in the first place, and a window to place them in.
@@ -91,13 +100,51 @@ def parse_addresses(value):
     return out
 
 
+def parse_x_header(value):
+    """Return [(display_name, exchange_login)] from an X-From/X-To/X-cc value.
+
+    The Exchange login is the trailing `CN=` fragment of the distinguished
+    name, which is the alias people are referred to by in prose and in system
+    messages. It is observed rather than guessed.
+    """
+    if not value:
+        return []
+    out = []
+    for name, dn in _X_ENTRY_RE.findall(" ".join(str(value).split())):
+        # Entries after the first arrive with the separating comma attached.
+        name = " ".join(name.split()).strip("'\"").lstrip(",").strip()
+        match = _EXCHANGE_CN_RE.search(dn or "")
+        login = match.group(1).lower() if match else ""
+        # A display name that is just the address adds no variant.
+        if "@" in name and name.lower() == login.lower():
+            name = ""
+        out.append((name, login))
+    return out
+
+
+def pair_names(addresses, x_value):
+    """Zip parsed addresses with the display names in the matching X- header.
+
+    Positional, because both lists come from the same recipient list in the
+    same order. A length mismatch means the two headers disagree, so the names
+    are dropped rather than risk attaching one person's name to another's
+    address.
+    """
+    parsed = parse_x_header(x_value)
+    if len(parsed) != len(addresses):
+        return [(display, "", addr) for display, addr in addresses]
+    return [(x_display or display, login, addr)
+            for (display, addr), (x_display, login) in zip(addresses, parsed)]
+
+
 class _Person:
-    __slots__ = ("address", "names", "sent", "received", "custodians",
+    __slots__ = ("address", "names", "logins", "sent", "received", "custodians",
                  "correspondents", "first", "last")
 
     def __init__(self, address):
         self.address = address
         self.names = {}          # variant -> times observed
+        self.logins = set()      # Exchange aliases observed in X- headers
         self.sent = 0
         self.received = 0
         self.custodians = set()
@@ -105,10 +152,12 @@ class _Person:
         self.first = None
         self.last = None
 
-    def observe(self, display, timestamp, custodian):
+    def observe(self, display, login, timestamp, custodian):
         """Record everything that can repeat within a single message."""
         if display:
             self.names[display] = self.names.get(display, 0) + 1
+        if login:
+            self.logins.add(login)
         if custodian:
             self.custodians.add(custodian)
         if timestamp is not None:
@@ -134,17 +183,20 @@ def accumulate(documents):
     for doc in documents:
         timestamp = _parse_timestamp(doc.get("@timestamp"))
         custodian = doc.get("custodian") or ""
-        senders = parse_addresses(doc.get("from"))
-        recipients = parse_addresses(doc.get("to")) + parse_addresses(doc.get("cc"))
+
+        named = {}
+        for address_header, x_header in _ADDRESS_HEADERS:
+            addresses = parse_addresses(doc.get(address_header))
+            named[address_header] = pair_names(addresses, doc.get(x_header))
 
         # Roles are per message, not per header occurrence: people cc their own
         # address constantly, and counting that twice inflates their volume.
         roles = {}
-        for display, addr in senders:
-            person(addr).observe(display, timestamp, custodian)
+        for display, login, addr in named["from"]:
+            person(addr).observe(display, login, timestamp, custodian)
             roles[addr] = "sent"
-        for display, addr in recipients:
-            person(addr).observe(display, timestamp, custodian)
+        for display, login, addr in named["to"] + named["cc"]:
+            person(addr).observe(display, login, timestamp, custodian)
             roles.setdefault(addr, "received")
 
         for addr, role in roles.items():
@@ -175,6 +227,7 @@ def to_entries(people, top_correspondents=DEFAULT_TOP_CORRESPONDENTS):
             "attributes": {
                 "address": addr,
                 "display_name_variants": variants,
+                "exchange_logins": sorted(p.logins),
                 "domain": addr.split("@", 1)[1] if "@" in addr else "",
                 "internal": addr.endswith("@" + INTERNAL_DOMAIN),
                 "message_count": p.sent + p.received,
@@ -230,6 +283,7 @@ def coverage(entries, documents_scanned, min_messages=DEFAULT_MIN_MESSAGES):
     counts = sorted(e["attributes"]["message_count"] for e in entries)
     total = len(entries)
     named = sum(1 for e in entries if e["attributes"]["display_name_variants"])
+    logins = sum(1 for e in entries if e["attributes"].get("exchange_logins"))
     windowed = sum(1 for e in entries if e["active_from"] and e["active_to"])
     internal = sum(1 for e in entries if e["attributes"]["internal"])
 
@@ -240,6 +294,7 @@ def coverage(entries, documents_scanned, min_messages=DEFAULT_MIN_MESSAGES):
         "documents_scanned": documents_scanned,
         "distinct_addresses": total,
         "with_display_name": {"count": named, "percent": pct(named)},
+        "with_exchange_login": {"count": logins, "percent": pct(logins)},
         "with_active_window": {"count": windowed, "percent": pct(windowed)},
         "internal_addresses": {"count": internal, "percent": pct(internal)},
         "external_addresses": {"count": total - internal, "percent": pct(total - internal)},

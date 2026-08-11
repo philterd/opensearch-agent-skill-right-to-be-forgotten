@@ -13,7 +13,7 @@ stops a mailbox named after the subject from being searchable.
 import json
 import os
 
-from lib.leakage import audit
+from lib.leakage import alias_set_failures, audit
 from lib.masking import (LABELS_PATH, MASKED_INDEX, MASK_TOKEN, build_pattern,
                          find_variants, mask_text, masked_doc_id)
 
@@ -88,6 +88,10 @@ def build_masked_corpus(client, aliases, source_index=SOURCE_INDEX,
     pattern = build_pattern(aliases["variants"])
     if pattern is None:
         raise ValueError("Alias set is empty; nothing to mask.")
+    # Fail before building an index nobody can trust, rather than after.
+    thin = alias_set_failures(aliases)
+    if thin:
+        raise ValueError(" ".join(thin))
 
     neural = _create_masked_index(client, masked_index, text_field, timestamp_field,
                                   setup_neural, embedding_field)
@@ -170,7 +174,7 @@ def audit_masked_index(client, aliases, index=MASKED_INDEX,
                        phone_policy="identification", text_field="message"):
     pattern = build_pattern(aliases["variants"])
     return audit(iter_masked_documents(client, index), pattern,
-                 phone_policy=phone_policy, text_field=text_field)
+                 phone_policy=phone_policy, text_field=text_field, aliases=aliases)
 
 
 def verify_positives(client, aliases, positives, source_index=SOURCE_INDEX,

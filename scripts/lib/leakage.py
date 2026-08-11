@@ -54,13 +54,59 @@ def count_phone_signals(text):
     return len(digits_ok) + len(_EXTENSION_RE.findall(text))
 
 
-def audit(documents, pattern, phone_policy="identification", text_field="message"):
+def alias_set_failures(aliases):
+    """Reasons an alias set cannot support a trustworthy audit.
+
+    The audit can only look for variants it was given, so an alias set with no
+    name in it passes while the corpus still says the subject's name on every
+    page. That is worse than no gate, because it certifies a corpus as scorable
+    when it is not. Observed on the real corpus: a subject with six
+    address-derived variants and no display name passed the audit while 89
+    documents still contained their full name verbatim.
+    """
+    if aliases is None:
+        return []
+    failures = []
+    if not aliases.get("name_variants"):
+        failures.append(
+            f"Alias set for '{aliases.get('subject', 'unknown')}' contains no name "
+            f"variants, only addresses and logins, so masking cannot remove the "
+            f"subject's name and the audit would pass without checking for it. "
+            f"Give the roster a display name for this subject, or pick another."
+        )
+    return failures
+
+
+def _substring_pattern(aliases):
+    """A looser pattern than the masker uses, for reporting only.
+
+    The audit and the masker share one pattern, so the audit is blind to
+    anything the pattern cannot see: a boundary rule that skips a name also
+    skips it on the way back out. This ignores word boundaries entirely and
+    reports what it finds without failing the run, so that class of miss shows
+    up as a number a human can look at rather than as silence. It over-reports
+    by construction (a four-letter surname matches inside longer words).
+    """
+    names = [n for n in (aliases or {}).get("name_variants") or [] if len(n) >= 4]
+    if not names:
+        return None
+    ordered = sorted(set(names), key=lambda v: (-len(v), v))
+    return re.compile("|".join(re.escape(n) for n in ordered), re.IGNORECASE)
+
+
+def audit(documents, pattern, phone_policy="identification", text_field="message",
+          aliases=None):
     """Audit masked documents. ``documents`` yields (doc_id, source).
 
     Returns a report whose ``passed`` decides whether a score may be produced.
+    Pass ``aliases`` so the gate can also fail on an alias set too thin to
+    audit against.
     """
     if phone_policy not in PHONE_POLICIES:
         raise ValueError(f"Unknown phone policy '{phone_policy}'.")
+
+    loose = _substring_pattern(aliases)
+    loose_docs = 0
 
     scanned = 0
     surviving_docs = 0
@@ -82,13 +128,16 @@ def audit(documents, pattern, phone_policy="identification", text_field="message
             surviving_docs += 1
             surviving_variants.update(v.lower() for v in found)
 
+        if loose is not None and loose.search(text):
+            loose_docs += 1
+
         hits = count_phone_signals(text)
         if hits:
             phone_docs += 1
             phone_hits += hits
 
     phones_are_leakage = phone_policy == "leakage"
-    failures = []
+    failures = alias_set_failures(aliases)
     if surviving_variants:
         failures.append(
             f"{len(surviving_variants)} alias variant(s) survived masking in "
@@ -113,10 +162,24 @@ def audit(documents, pattern, phone_policy="identification", text_field="message
         "passed": not failures,
         "failures": failures,
         "documents_scanned": scanned,
+        "alias_set": {
+            "name_variants": len((aliases or {}).get("name_variants") or []),
+            "login_variants": len((aliases or {}).get("login_variants") or []),
+            "addresses": len((aliases or {}).get("addresses") or []),
+        },
         "surviving_variants": {
             # Counts only. The variants are the subject's own name.
             "distinct": len(surviving_variants),
             "documents": surviving_docs,
+        },
+        "residual_name_substrings": {
+            "documents": loose_docs,
+            "note": (
+                "Reported, not enforced. Ignores word boundaries, so it over-reports "
+                "by matching short surnames inside longer words. A number well above "
+                "zero here with zero surviving variants means the masking pattern's "
+                "boundary rule is skipping something it should remove."
+            ),
         },
         "readable_document_ids": readable_ids,
         "forbidden_fields_present": sorted(forbidden_seen),

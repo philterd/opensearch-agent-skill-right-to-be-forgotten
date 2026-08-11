@@ -89,6 +89,51 @@ def test_alias_set_for_an_unknown_subject_still_yields_the_address():
     assert aliases["variants"] == ["ghost@enron.com"]
 
 
+def test_alias_set_prefers_observed_exchange_logins():
+    entry = _entry("lynn.blair@enron.com", ["Blair, Lynn"])
+    entry["attributes"]["exchange_logins"] = ["lblair"]
+    aliases = masking.alias_set([entry], "lynn.blair@enron.com")
+    assert "lblair" in aliases["login_variants"]        # observed
+    assert "lynn.blair" in aliases["login_variants"]    # generated fallback
+
+
+# --- the gate fails closed on a thin alias set ------------------------------ #
+
+def _nameless():
+    """What the real corpus produced before the X- headers were indexed."""
+    return masking.alias_set([_entry("lynn.blair@enron.com", [])], "lynn.blair@enron.com")
+
+
+def test_alias_set_failures_flags_an_alias_set_with_no_name():
+    aliases = _nameless()
+    assert aliases["name_variants"] == []
+    failures = leakage.alias_set_failures(aliases)
+    assert len(failures) == 1 and "no name variants" in failures[0]
+
+
+def test_alias_set_failures_accepts_a_named_subject():
+    aliases = masking.alias_set(ENTRIES, "phillip.allen@enron.com")
+    assert leakage.alias_set_failures(aliases) == []
+    assert leakage.alias_set_failures(None) == []
+
+
+def test_audit_fails_on_a_nameless_alias_set_even_with_clean_text():
+    """The regression: this combination used to report passed=True."""
+    aliases = _nameless()
+    pattern = masking.build_pattern(aliases["variants"])
+    docs = [_masked_doc("Lynn Blair approved the schedule.")]
+    report = leakage.audit(docs, pattern, aliases=aliases)
+    assert report["passed"] is False
+    assert report["surviving_variants"]["distinct"] == 0  # nothing to look for
+    assert "no name variants" in report["failures"][0]
+    assert report["alias_set"]["name_variants"] == 0
+
+
+def test_build_masked_corpus_refuses_a_nameless_alias_set():
+    with pytest.raises(ValueError, match="no name variants"):
+        corpus.build_masked_corpus(_FakeClient([]), _nameless(), setup_neural=False)
+
+
 # --- masking --------------------------------------------------------------- #
 
 @pytest.fixture
@@ -128,6 +173,22 @@ def test_masking_does_not_fire_inside_a_longer_word(pattern):
     assert hits == 0 and masked == "The allenwrench and mcallen office"
 
 
+def test_masking_reaches_a_name_wrapped_across_ascii_table_cells(pattern):
+    """Forwarded mail wraps addresses mid-token, leaving `Allen@e| | |nron.com`.
+
+    An `@` in the right-hand boundary treated that as address interior and left
+    the surname in the masked corpus.
+    """
+    text = "-------> | | \"Phillip\"| | | <Phillip.Allen@e| | | nron.com> | | | 11/07"
+    masked, _ = masking.mask_text(text, pattern)
+    assert "Allen" not in masked and "Phillip" not in masked
+
+
+def test_masking_still_consumes_a_whole_intact_address(pattern):
+    masked, hits = masking.mask_text("phillip.allen@enron.com", pattern)
+    assert masked == masking.MASK_TOKEN and hits == 1
+
+
 def test_build_pattern_returns_none_for_an_empty_alias_set():
     assert masking.build_pattern([]) is None
     assert masking.mask_text("text", None) == ("text", 0)
@@ -165,6 +226,22 @@ def test_audit_fails_when_a_variant_survives(pattern):
 def test_audit_reports_counts_not_the_surviving_names(pattern):
     report = leakage.audit([_masked_doc("Phillip K Allen")], pattern)
     assert "Phillip" not in json.dumps(report)
+
+
+def test_audit_reports_residual_name_substrings_without_failing(pattern):
+    aliases = masking.alias_set(ENTRIES, "phillip.allen@enron.com")
+    # "Allenby" is not a variant match, but the loose check still sees "Allen".
+    report = leakage.audit([_masked_doc("Allenby Road")], pattern, aliases=aliases)
+    assert report["passed"] is True
+    assert report["surviving_variants"]["distinct"] == 0
+    assert report["residual_name_substrings"]["documents"] == 1
+
+
+def test_residual_reporting_is_quiet_on_a_genuinely_clean_corpus(pattern):
+    aliases = masking.alias_set(ENTRIES, "phillip.allen@enron.com")
+    report = leakage.audit([_masked_doc(f"{masking.MASK_TOKEN} sent it.")], pattern,
+                           aliases=aliases)
+    assert report["residual_name_substrings"]["documents"] == 0
 
 
 def test_audit_fails_on_a_readable_document_id(pattern):

@@ -86,11 +86,19 @@ name-free description identifies someone depends on facts the index does not
 contain. [`EVALUATION.md`](EVALUATION.md) sets out a method that derives labels
 from data the corpus already holds, how it applies to Enron, and what the
 resulting numbers do and do not mean. The `roster` command implements its first
-stage against `mail-enron`: it sweeps the `from`, `to`, and `cc` headers into a
-per-person record of address, display-name variants, active window, and message
-count, then reports coverage and records whether the available attributes can
-support the later stages. It reads only headers, never `message`, so the field
-discovery searches stays held out of the label source. The roster names real
+stage against `mail-enron`: it sweeps the address headers into a per-person
+record of address, display-name variants, Exchange login, active window, and
+message count, then reports coverage and records whether the available
+attributes can support the later stages. It reads only headers, never `message`,
+so the field discovery searches stays held out of the label source.
+
+The readable names are in `X-From`, `X-To`, and `X-cc`, not in `From`, `To`, and
+`Cc`, which hold bare addresses. Reading only the latter puts display-name
+coverage at about 2% and the roster reports a corpus that cannot support the
+later stages; reading the `X-` headers puts it near 90%. They are paired
+positionally with the address lists, and the names are dropped for a message
+whose two headers disagree on length rather than risk attaching one person's
+name to another's address. The roster names real
 people, so it is written to `gdpr-eval/` (gitignored) and only aggregate metrics
 are printed.
 
@@ -106,7 +114,15 @@ disk rather than to the output.
 Masking is then audited, and the audit is a gate rather than a warning: if one
 variant survives, the document is still trivially retrievable and every number
 computed from it would be fiction, so the run exits non-zero and the label set
-is marked unscorable. `audit-mask` re-runs that check on its own. Note that
+is marked unscorable. `audit-mask` re-runs that check on its own.
+
+The gate also fails closed on an alias set with no name in it. An audit can only
+look for the variants it was given, so a subject whose roster entry carries no
+display name would otherwise pass while the corpus still prints their name on
+every page. Alongside that, the report counts documents matching a name variant
+ignoring word boundaries. That number over-reports by construction and never
+fails a run, but a high count next to zero surviving variants is the signature
+of a masking pattern whose boundary rule is skipping something. Note that
 masking manufactures the indirect case, since a sentence written without a name
 would have been phrased differently from one with the name removed. Results from
 this corpus are a proxy for naturally occurring indirect reference, not a sample
@@ -143,6 +159,7 @@ employees". Erasure requests against this dataset are not hypothetical.
 | `OPENSEARCH_HOST` / `OPENSEARCH_PORT` | `localhost` / `9200` | Cluster endpoint |
 | `OPENSEARCH_URL` | `http://<host>:<port>` | Endpoint baked into the exported curl script |
 | `OPENSEARCH_AUTH_MODE` | `default` | `default`, `none`, or `custom` |
+| `OPENSEARCH_JAVA_OPTS` | `-Xms3g -Xmx3g` | JVM heap for the bootstrapped local container. Below 3Gb, deploying the embedding model pushes heap past the ML Commons circuit breaker and neural search fails. Ignored when you bring your own cluster |
 | `OPENSEARCH_USER` / `OPENSEARCH_PASSWORD` | none | Used when auth mode is `custom` |
 | `GDPR_AUDIT_DIR` | `gdpr-audit` | Where erasure certificates are written |
 | `GDPR_ACTOR` | OS user | Recorded as the actor in the audit trail |

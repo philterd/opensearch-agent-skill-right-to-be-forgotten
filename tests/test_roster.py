@@ -53,6 +53,68 @@ def test_parse_addresses_skips_entries_without_an_address():
     assert roster.parse_addresses(None) == []
 
 
+_X_FROM = "Fagan, Fran </O=ENRON/OU=NA/CN=RECIPIENTS/CN=FFAGAN>"
+_X_TO = ("Blair, Lynn </O=ENRON/OU=NA/CN=RECIPIENTS/CN=Lblair>, "
+         "Bryan, Randy </O=ENRON/OU=NA/CN=RECIPIENTS/CN=Rbryan2>")
+
+
+def test_parse_x_header_extracts_name_and_exchange_login():
+    assert roster.parse_x_header(_X_FROM) == [("Fagan, Fran", "ffagan")]
+    assert roster.parse_x_header(_X_TO) == [
+        ("Blair, Lynn", "lblair"), ("Bryan, Randy", "rbryan2")
+    ]
+
+
+def test_parse_x_header_tolerates_an_entry_without_a_distinguished_name():
+    assert roster.parse_x_header("Jane Roe <jane@partner.example>") == [("Jane Roe", "")]
+    assert roster.parse_x_header("") == []
+
+
+def test_pair_names_zips_addresses_with_the_x_header():
+    addresses = [("", "lynn.blair@enron.com"), ("", "randy.bryan@enron.com")]
+    assert roster.pair_names(addresses, _X_TO) == [
+        ("Blair, Lynn", "lblair", "lynn.blair@enron.com"),
+        ("Bryan, Randy", "rbryan2", "randy.bryan@enron.com"),
+    ]
+
+
+def test_pair_names_drops_names_when_the_headers_disagree():
+    """Mispairing would attach one person's name to another's address."""
+    addresses = [("", "a@enron.com")]
+    paired = roster.pair_names(addresses, _X_TO)  # two names, one address
+    assert paired == [("", "", "a@enron.com")]
+
+
+def test_accumulate_takes_display_names_from_the_x_headers():
+    docs = [{
+        "from": "fran.fagan@enron.com",
+        "to": ["lynn.blair@enron.com", "randy.bryan@enron.com"],
+        "cc": [],
+        "x_from": _X_FROM,
+        "x_to": _X_TO,
+        "x_cc": "",
+        "custodian": "blair-l",
+        "@timestamp": "2001-05-01T12:00:00+00:00",
+    }]
+    people = roster.accumulate(docs)
+    assert people["fran.fagan@enron.com"].names == {"Fagan, Fran": 1}
+    assert people["fran.fagan@enron.com"].logins == {"ffagan"}
+    assert people["lynn.blair@enron.com"].names == {"Blair, Lynn": 1}
+    assert people["lynn.blair@enron.com"].logins == {"lblair"}
+
+
+def test_entries_and_coverage_report_exchange_logins():
+    docs = [{
+        "from": "fran.fagan@enron.com", "to": [], "cc": [],
+        "x_from": _X_FROM, "x_to": "", "x_cc": "",
+        "custodian": "blair-l", "@timestamp": "2001-05-01T12:00:00+00:00",
+    }]
+    entries = roster.to_entries(roster.accumulate(docs))
+    assert entries[0]["attributes"]["exchange_logins"] == ["ffagan"]
+    cov = roster.coverage(entries, 1)
+    assert cov["with_exchange_login"] == {"count": 1, "percent": 100.0}
+
+
 def test_accumulate_counts_sent_received_and_window():
     docs = [
         _doc("A One <a@enron.com>", to=["b@enron.com"], ts="2001-01-01T00:00:00+00:00"),

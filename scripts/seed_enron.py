@@ -89,6 +89,10 @@ def _timestamp(msg):
         return None
 
 
+def _header(msg, name):
+    return " ".join((msg.get(name) or "").split())
+
+
 def _addresses(msg, header):
     value = msg.get(header)
     if not value:
@@ -122,6 +126,14 @@ def parse_member(raw, custodian, folder, max_chars):
         "from": (msg.get("From") or "").strip(),
         "to": _addresses(msg, "To"),
         "cc": _addresses(msg, "Cc"),
+        # From/To/Cc hold bare addresses in this corpus; the readable names and
+        # Exchange logins are only in the X- headers, as
+        # `Fagan, Fran </O=ENRON/OU=NA/CN=RECIPIENTS/CN=FFAGAN>`. Kept verbatim
+        # and paired positionally with the address lists above, because the
+        # display names contain the commas those lists were split on.
+        "x_from": _header(msg, "X-From"),
+        "x_to": _header(msg, "X-To"),
+        "x_cc": _header(msg, "X-cc"),
         "custodian": custodian,
         "folder": folder,
         "message_id": (msg.get("Message-ID") or "").strip(),
@@ -207,6 +219,11 @@ def load(client, setup_neural=True, text_field="message",
         "from": {"type": "keyword"},
         "to": {"type": "keyword"},
         "cc": {"type": "keyword"},
+        # Read from _source by the roster scan, never queried. Left unindexed so
+        # a long recipient list cannot exceed the keyword term limit.
+        "x_from": {"type": "keyword", "index": False, "doc_values": False},
+        "x_to": {"type": "keyword", "index": False, "doc_values": False},
+        "x_cc": {"type": "keyword", "index": False, "doc_values": False},
         "custodian": {"type": "keyword"},
         "folder": {"type": "keyword"},
         "message_id": {"type": "keyword"},
