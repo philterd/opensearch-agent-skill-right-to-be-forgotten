@@ -352,6 +352,23 @@ in the reply, the reply supplies a label for genuinely natural indirect language
 Yield is low and the work is manual, but this set is the useful complement to the
 masked one, because masking manufactures a document nobody wrote.
 
+**Verdict: not viable for this claim.** Both routes are closed. Masked mention
+recovery fails structurally, because email names authors and recipients rather
+than describing them: for one subject, 143 of 219 positives were recipient-list
+mentions and the rest were signatures and forwarding lines. Natural cases fail
+on yield: role-reference phrasing appears in 0.39% of documents, and sampling
+shows those either name the person in the same sentence, describe a generic
+role, or describe someone with no roster entry to label against.
+
+**Measured**, same pipeline, same thresholds: on the synthetic demo corpus the
+judgment scored precision 1.00 and recall 0.91 with zero false positives across
+all eight decoy categories. On Enron it flagged nothing at the default
+threshold and one useful document at the loosest.
+
+Keep Enron for the direct pass, for scale, and for regression: 517,394 real
+messy documents exposed four defects the synthetic corpus never would. Measure
+capability elsewhere, on documents written to describe people.
+
 **Ethics.** These are real people, most of them private individuals whose mail
 became public because of an investigation into others. Report aggregate metrics.
 Do not publish reconstructed profiles of individuals, and do not reproduce more
