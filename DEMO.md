@@ -20,6 +20,12 @@ explains how to see the difference.
 
 ## 1. Start OpenSearch and deploy the embedding model
 
+> **Shortcut.** `./scripts/demo_up.sh` does steps 1 to 3 in one go: it starts the
+> cluster with `docker compose`, deploys the model, seeds the corpus if the index
+> is empty, and verifies that hybrid search is actually working. It is safe to
+> re-run, and it is the quicker way back in on a later session. The rest of this
+> section explains what it does, which is worth reading once.
+
 ```bash
 uv run python scripts/forget_me.py setup
 ```
@@ -31,6 +37,23 @@ hybrid search pipelines. No external API or API key.
 
 Run this ahead of time. The model download and deployment is the slow step and
 gives no progress output.
+
+Two things to know if you run the commands by hand rather than through
+`demo_up.sh`:
+
+- **Do not run `setup` while the container is stopped.** It looks for a
+  *running* container, and on not finding one it runs `docker rm -f` and builds
+  a fresh one, which discards an index you have already seeded. Start the
+  existing container first (`docker compose start`, or `docker start
+  gdpr-forget-me-os`), then run `setup`.
+- **Redeploy the model after every restart.** ML Commons keeps the model
+  registered across a restart but does not reload it, and `setup` returns early
+  on that stale state. `status` keeps reporting
+  `embedding_model_deployed: true` either way, while `discover` either fails
+  with `Model not ready yet` or, worse, quietly returns
+  `"mode": "bm25_fallback"` instead of `"hybrid"` and runs the indirect pass
+  without the vector half. `demo_up.sh` forces the deploy, waits for the model
+  to reach `DEPLOYED`, and then checks the mode; by hand, confirm it in step 6.
 
 ## 2. Check it is ready
 
@@ -417,14 +440,27 @@ The downloaded corpus stays in `gdpr-eval/courtlistener/` so a re-run starts in
 seconds. Delete that directory too if you want the disk back; it is gitignored
 and re-fetched on demand.
 
+Stop the cluster, keeping the index:
+
+```bash
+docker compose stop
+```
+
 Tear down completely:
 
 ```bash
-docker rm -f gdpr-forget-me-os
+docker compose down     # removes the container, keeps the indexed data
+docker compose down -v  # removes the indexed data as well
 ```
 
-The indexed data lives only in the container, so removing it removes the data.
-The cached corpus under `gdpr-eval/` survives; delete it separately.
+`docker-compose.yml` keeps the index in a named volume, so it survives both a
+restart and a `docker compose down`. Only `-v` discards it.
+
+If you started the container another way, `docker rm -f gdpr-forget-me-os`
+removes it, and with it the data: the bootstrap inside `forget_me.py` mounts no
+volume and keeps the index in the container layer.
+
+Either way the cached corpus under `gdpr-eval/` survives; delete it separately.
 
 ---
 
